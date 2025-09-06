@@ -208,3 +208,4 @@ install(FILES
 )
 
 install(DIRECTORY src/dynarmic TYPE INCLUDE FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY src/dynarmic TYPE INCLUDE FILES_MATCHING PATTERN "*.inc")
