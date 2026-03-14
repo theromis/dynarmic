@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -11,7 +14,7 @@
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include <mcl/type_traits/integer_of_size.hpp>
-#include <xbyak/xbyak.h>
+#include "dynarmic/backend/x64/xbyak.h"
 
 #include "dynarmic/backend/x64/a64_emit_x64.h"
 #include "dynarmic/backend/x64/abi.h"
@@ -20,7 +23,6 @@
 #include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/common/spin_lock_x64.h"
-#include "dynarmic/common/x64_disassemble.h"
 #include "dynarmic/interface/exclusive_monitor.h"
 
 namespace Dynarmic::Backend::X64 {
@@ -33,13 +35,13 @@ void A64EmitX64::GenMemory128Accessors() {
 #ifdef _WIN32
     Devirtualize<&A64::UserCallbacks::MemoryRead128>(conf.callbacks).EmitCallWithReturnPointer(code, [&](Xbyak::Reg64 return_value_ptr, [[maybe_unused]] RegList args) {
         code.mov(code.ABI_PARAM3, code.ABI_PARAM2);
-        code.sub(rsp, 8 + 16 + ABI_SHADOW_SPACE);
+        code.lea(rsp, ptr[rsp - (8 + 16 + ABI_SHADOW_SPACE)]);
         code.lea(return_value_ptr, ptr[rsp + ABI_SHADOW_SPACE]);
     });
     code.movups(xmm1, xword[code.ABI_RETURN]);
     code.add(rsp, 8 + 16 + ABI_SHADOW_SPACE);
 #else
-    code.sub(rsp, 8);
+    code.lea(rsp, ptr[rsp - 8]);
     Devirtualize<&A64::UserCallbacks::MemoryRead128>(conf.callbacks).EmitCall(code);
     if (code.HasHostFeature(HostFeature::SSE41)) {
         code.movq(xmm1, code.ABI_RETURN);
@@ -57,13 +59,13 @@ void A64EmitX64::GenMemory128Accessors() {
     code.align();
     memory_write_128 = code.getCurr<void (*)()>();
 #ifdef _WIN32
-    code.sub(rsp, 8 + 16 + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (8 + 16 + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
     code.movaps(xword[code.ABI_PARAM3], xmm1);
     Devirtualize<&A64::UserCallbacks::MemoryWrite128>(conf.callbacks).EmitCall(code);
     code.add(rsp, 8 + 16 + ABI_SHADOW_SPACE);
 #else
-    code.sub(rsp, 8);
+    code.lea(rsp, ptr[rsp - 8]);
     if (code.HasHostFeature(HostFeature::SSE41)) {
         code.movq(code.ABI_PARAM3, xmm1);
         code.pextrq(code.ABI_PARAM4, xmm1, 1);
@@ -81,7 +83,7 @@ void A64EmitX64::GenMemory128Accessors() {
     code.align();
     memory_exclusive_write_128 = code.getCurr<void (*)()>();
 #ifdef _WIN32
-    code.sub(rsp, 8 + 32 + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (8 + 32 + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
     code.lea(code.ABI_PARAM4, ptr[rsp + ABI_SHADOW_SPACE + 16]);
     code.movaps(xword[code.ABI_PARAM3], xmm1);
@@ -89,7 +91,7 @@ void A64EmitX64::GenMemory128Accessors() {
     Devirtualize<&A64::UserCallbacks::MemoryWriteExclusive128>(conf.callbacks).EmitCall(code);
     code.add(rsp, 8 + 32 + ABI_SHADOW_SPACE);
 #else
-    code.sub(rsp, 8);
+    code.lea(rsp, ptr[rsp - 8]);
     if (code.HasHostFeature(HostFeature::SSE41)) {
         code.movq(code.ABI_PARAM3, xmm1);
         code.pextrq(code.ABI_PARAM4, xmm1, 1);
@@ -131,8 +133,8 @@ void A64EmitX64::GenFastmemFallbacks() {
         {64, Devirtualize<&A64::UserCallbacks::MemoryWriteExclusive64>(conf.callbacks)},
     }};
 
-    for (bool ordered : {false, true}) {
-        for (int vaddr_idx : idxes) {
+    for (auto const ordered : {false, true}) {
+        for (auto const vaddr_idx : idxes) {
             if (vaddr_idx == 4 || vaddr_idx == 15) {
                 continue;
             }
@@ -324,7 +326,7 @@ void A64EmitX64::EmitA64WriteMemory128(A64EmitContext& ctx, IR::Inst* inst) {
 }
 
 void A64EmitX64::EmitA64ClearExclusive(A64EmitContext&, IR::Inst*) {
-    code.mov(code.byte[r15 + offsetof(A64JitState, exclusive_state)], u8(0));
+    code.mov(code.byte[code.ABI_JIT_PTR + offsetof(A64JitState, exclusive_state)], u8(0));
 }
 
 void A64EmitX64::EmitA64ExclusiveReadMemory8(A64EmitContext& ctx, IR::Inst* inst) {
@@ -416,14 +418,14 @@ void A64EmitX64::EmitCheckMemoryAbort(A64EmitContext&, IR::Inst* inst, Xbyak::La
 
     const A64::LocationDescriptor current_location{IR::LocationDescriptor{inst->GetArg(0).GetU64()}};
 
-    code.test(dword[r15 + offsetof(A64JitState, halt_reason)], static_cast<u32>(HaltReason::MemoryAbort));
+    code.test(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], static_cast<u32>(HaltReason::MemoryAbort));
     if (end) {
         code.jz(*end, code.T_NEAR);
     } else {
         code.jz(skip, code.T_NEAR);
     }
     code.mov(rax, current_location.PC());
-    code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
+    code.mov(qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)], rax);
     code.ForceReturnFromRunCode();
     code.L(skip);
 }

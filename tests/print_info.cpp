@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -14,8 +17,9 @@
 
 #include <fmt/format.h>
 #include <fmt/ostream.h>
+#include <fmt/ranges.h>
 #include <mcl/bit/swap.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/common/llvm_disassemble.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
@@ -29,28 +33,27 @@
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/frontend/A64/translate/impl/impl.h"
 #include "dynarmic/interface/A32/a32.h"
-#include "dynarmic/interface/A32/disassembler.h"
+#include "dynarmic/interface/A32/config.h"
 #include "dynarmic/ir/basic_block.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
+
+#include "./A32/testenv.h"
+#include "./A64/testenv.h"
 
 using namespace Dynarmic;
 
-const char* GetNameOfA32Instruction(u32 instruction) {
-    if (auto vfp_decoder = A32::DecodeVFP<A32::TranslatorVisitor>(instruction)) {
-        return vfp_decoder->get().GetName();
-    } else if (auto asimd_decoder = A32::DecodeASIMD<A32::TranslatorVisitor>(instruction)) {
-        return asimd_decoder->get().GetName();
-    } else if (auto decoder = A32::DecodeArm<A32::TranslatorVisitor>(instruction)) {
-        return decoder->get().GetName();
-    }
+std::string_view GetNameOfA32Instruction(u32 instruction) {
+    if (auto const vfp_decoder = A32::DecodeVFP<A32::TranslatorVisitor>(instruction))
+        return *A32::GetNameVFP<A32::TranslatorVisitor>(instruction);
+    else if (auto const asimd_decoder = A32::DecodeASIMD<A32::TranslatorVisitor>(instruction))
+        return *A32::GetNameASIMD<A32::TranslatorVisitor>(instruction);
+    else if (auto const decoder = A32::DecodeArm<A32::TranslatorVisitor>(instruction))
+        return *A32::GetNameARM<A32::TranslatorVisitor>(instruction);
     return "<null>";
 }
 
-const char* GetNameOfA64Instruction(u32 instruction) {
-    if (auto decoder = A64::Decode<A64::TranslatorVisitor>(instruction)) {
-        return decoder->get().GetName();
-    }
-    return "<null>";
+std::string_view GetNameOfA64Instruction(u32 instruction) {
+    return *A64::GetName<A64::TranslatorVisitor>(instruction);
 }
 
 void PrintA32Instruction(u32 instruction) {
@@ -61,18 +64,12 @@ void PrintA32Instruction(u32 instruction) {
     IR::Block ir_block{location};
     const bool should_continue = A32::TranslateSingleInstruction(ir_block, location, instruction);
     fmt::print("should_continue: {}\n\n", should_continue);
-
-    Optimization::NamingPass(ir_block);
-
     fmt::print("IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
-
-    Optimization::A32GetSetElimination(ir_block, {});
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::ConstantPropagation(ir_block);
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::IdentityRemovalPass(ir_block);
-
+    ArmTestEnv jit_env{};
+    Dynarmic::A32::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &jit_env;
+    Optimization::Optimize(ir_block, jit_user_config, {});
     fmt::print("Optimized IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
 }
@@ -85,18 +82,12 @@ void PrintA64Instruction(u32 instruction) {
     IR::Block ir_block{location};
     const bool should_continue = A64::TranslateSingleInstruction(ir_block, location, instruction);
     fmt::print("should_continue: {}\n\n", should_continue);
-
-    Optimization::NamingPass(ir_block);
-
     fmt::print("IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
-
-    Optimization::A64GetSetElimination(ir_block);
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::ConstantPropagation(ir_block);
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::IdentityRemovalPass(ir_block);
-
+    A64TestEnv jit_env{};
+    Dynarmic::A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &jit_env;
+    Optimization::Optimize(ir_block, jit_user_config, {});
     fmt::print("Optimized IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
 }
@@ -112,18 +103,12 @@ void PrintThumbInstruction(u32 instruction) {
     IR::Block ir_block{location};
     const bool should_continue = A32::TranslateSingleInstruction(ir_block, location, instruction);
     fmt::print("should_continue: {}\n\n", should_continue);
-
-    Optimization::NamingPass(ir_block);
-
     fmt::print("IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
-
-    Optimization::A32GetSetElimination(ir_block, {});
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::ConstantPropagation(ir_block);
-    Optimization::DeadCodeElimination(ir_block);
-    Optimization::IdentityRemovalPass(ir_block);
-
+    ThumbTestEnv jit_env{};
+    Dynarmic::A32::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &jit_env;
+    Optimization::Optimize(ir_block, jit_user_config, {});
     fmt::print("Optimized IR:\n");
     fmt::print("{}\n", IR::DumpBlock(ir_block));
 }
@@ -165,9 +150,6 @@ public:
         MemoryWrite32(vaddr + 4, static_cast<u32>(value >> 32));
     }
 
-    void InterpreterFallback(u32 pc, size_t num_instructions) override {
-        fmt::print("> InterpreterFallback({:08x}, {}) code = {:08x}\n", pc, num_instructions, *MemoryReadCode(pc));
-    }
     void CallSVC(std::uint32_t swi) override {
         fmt::print("> CallSVC({})\n", swi);
     }
@@ -244,7 +226,7 @@ void ExecuteA32Instruction(u32 instruction) {
                 *(iter->second) = *value;
                 fmt::print("> {} = 0x{:08x}\n", reg_name, *value);
             }
-        } else if (reg_name == "mem" || reg_name == "memory") {
+        } else if (reg_name.starts_with("m")) {
             fmt::print("address: ");
             if (const auto address = get_value()) {
                 fmt::print("value: ");
@@ -253,7 +235,7 @@ void ExecuteA32Instruction(u32 instruction) {
                     fmt::print("> mem[0x{:08x}] = 0x{:08x}\n", *address, *value);
                 }
             }
-        } else if (reg_name == "end") {
+        } else if (reg_name == "exit" || reg_name == "end" || reg_name.starts_with("q")) {
             break;
         }
     }
@@ -269,6 +251,7 @@ void ExecuteA32Instruction(u32 instruction) {
     env.MemoryWrite32(initial_pc + 4, 0xEAFFFFFE);  // B +0
 
     cpu.Run();
+    fmt::print("{}", fmt::join(cpu.Disassemble(), "\n"));
 
     fmt::print("Registers modified:\n");
     for (size_t i = 0; i < regs.size(); ++i) {

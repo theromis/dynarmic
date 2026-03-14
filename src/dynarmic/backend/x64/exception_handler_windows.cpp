@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -9,9 +12,9 @@
 #include <cstring>
 #include <vector>
 
-#include <mcl/assert.hpp>
-#include <mcl/bit_cast.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/assert.h"
+#include <bit>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/backend/exception_handler.h"
 #include "dynarmic/backend/x64/block_of_code.h"
@@ -181,20 +184,20 @@ struct ExceptionHandler::Impl final {
         // Our 3rd argument is a PCONTEXT.
 
         // If not within our codeblock, ignore this exception.
-        code.mov(code.rax, Safe::Negate(mcl::bit_cast<u64>(code.getCode())));
+        code.mov(code.rax, Safe::Negate(std::bit_cast<u64>(code.getCode())));
         code.add(code.rax, code.qword[code.ABI_PARAM3 + Xbyak::RegExp(offsetof(CONTEXT, Rip))]);
         code.cmp(code.rax, static_cast<u32>(code.GetTotalCodeSize()));
         code.ja(exception_handler_without_cb);
 
-        code.sub(code.rsp, 8);
-        code.mov(code.ABI_PARAM1, mcl::bit_cast<u64>(&cb));
+        code.lea(code.rsp, code.ptr[code.rsp - 8]);
+        code.mov(code.ABI_PARAM1, std::bit_cast<u64>(&cb));
         code.mov(code.ABI_PARAM2, code.ABI_PARAM3);
         code.CallLambda(
             [](const std::function<FakeCall(u64)>& cb_, PCONTEXT ctx) {
                 FakeCall fc = cb_(ctx->Rip);
 
                 ctx->Rsp -= sizeof(u64);
-                *mcl::bit_cast<u64*>(ctx->Rsp) = fc.ret_rip;
+                *std::bit_cast<u64*>(ctx->Rsp) = fc.ret_rip;
                 ctx->Rip = fc.call_rip;
             });
         code.add(code.rsp, 8);

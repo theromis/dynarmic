@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -10,8 +13,8 @@
 #include <memory>
 #include <vector>
 
-#include <mcl/stdint.hpp>
-#include <tsl/robin_map.h>
+#include "dynarmic/common/common_types.h"
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/arm64/fastmem.h"
 #include "dynarmic/interface/A32/coprocessor.h"
@@ -102,8 +105,8 @@ struct EmittedBlockInfo {
     CodePtr entry_point;
     size_t size;
     std::vector<Relocation> relocations;
-    tsl::robin_map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
-    tsl::robin_map<std::ptrdiff_t, FastmemPatchInfo> fastmem_patch_info;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
+    ankerl::unordered_dense::map<std::ptrdiff_t, FastmemPatchInfo> fastmem_patch_info;
 };
 
 struct EmitConfig {
@@ -126,6 +129,7 @@ struct EmitConfig {
     u64 page_table_pointer;
     size_t page_table_address_space_bits;
     int page_table_pointer_mask_bits;
+    size_t page_table_log2_stride;
     bool silently_mirror_page_table;
     bool absolute_offset_page_table;
     u8 detect_misaligned_access_via_page_table;

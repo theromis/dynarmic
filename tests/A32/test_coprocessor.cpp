@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "./testenv.h"
+#include "../native/testenv.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/coprocessor.h"
@@ -156,7 +160,7 @@ TEST_CASE("arm: Test coprocessor (Read TPIDRURO)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[1] == 0xf00d);
 }
@@ -178,7 +182,7 @@ TEST_CASE("arm: Test coprocessor (Read TPIDRURW)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[1] == 0xcafe);
 }
@@ -200,7 +204,7 @@ TEST_CASE("arm: Test coprocessor (Write TPIDRURW)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(cp15_state.cp15_thread_uprw == 0xaaaa);
 }
@@ -222,7 +226,7 @@ TEST_CASE("arm: Test coprocessor (DMB)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(cp15_state.cp15_data_memory_barrier == 1);
 }

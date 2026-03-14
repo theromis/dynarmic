@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,7 +8,7 @@
 
 #include "dynarmic/ir/value.h"
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
 
 #include "dynarmic/ir/microinstruction.h"
@@ -85,23 +88,29 @@ Value Value::EmptyNZCVImmediateMarker() {
     return result;
 }
 
-bool Value::IsIdentity() const {
+/// @brief ?
+bool Value::IsIdentity() const noexcept {
     if (type == Type::Opaque)
         return inner.inst->GetOpcode() == Opcode::Identity;
     return false;
 }
 
-bool Value::IsImmediate() const {
-    if (IsIdentity())
-        return inner.inst->GetArg(0).IsImmediate();
-    return type != Type::Opaque;
-}
-
-bool Value::IsEmpty() const {
+bool Value::IsEmpty() const noexcept {
     return type == Type::Void;
 }
 
-Type Value::GetType() const {
+bool Value::IsImmediate() const noexcept {
+    IR::Type current_type = type;
+    IR::Inst const* current_inst = inner.inst;
+    while (current_type == Type::Opaque && current_inst->GetOpcode() == Opcode::Identity) {
+        Value const& arg = current_inst->GetArg(0);
+        current_type = arg.type;
+        current_inst = arg.inner.inst;
+    }
+    return current_type != Type::Opaque;
+}
+
+Type Value::GetType() const noexcept {
     if (IsIdentity())
         return inner.inst->GetArg(0).GetType();
     if (type == Type::Opaque)
@@ -199,7 +208,6 @@ AccType Value::GetAccType() const {
 
 s64 Value::GetImmediateAsS64() const {
     ASSERT(IsImmediate());
-
     switch (GetType()) {
     case IR::Type::U1:
         return s64(GetU1());
@@ -212,13 +220,12 @@ s64 Value::GetImmediateAsS64() const {
     case IR::Type::U64:
         return s64(GetU64());
     default:
-        ASSERT_FALSE("GetImmediateAsS64 called on an incompatible Value type.");
+        UNREACHABLE();
     }
 }
 
 u64 Value::GetImmediateAsU64() const {
     ASSERT(IsImmediate());
-
     switch (GetType()) {
     case IR::Type::U1:
         return u64(GetU1());
@@ -231,24 +238,8 @@ u64 Value::GetImmediateAsU64() const {
     case IR::Type::U64:
         return u64(GetU64());
     default:
-        ASSERT_FALSE("GetImmediateAsU64 called on an incompatible Value type.");
+        UNREACHABLE();
     }
-}
-
-bool Value::IsSignedImmediate(s64 value) const {
-    return IsImmediate() && GetImmediateAsS64() == value;
-}
-
-bool Value::IsUnsignedImmediate(u64 value) const {
-    return IsImmediate() && GetImmediateAsU64() == value;
-}
-
-bool Value::HasAllBitsSet() const {
-    return IsSignedImmediate(-1);
-}
-
-bool Value::IsZero() const {
-    return IsUnsignedImmediate(0);
 }
 
 }  // namespace Dynarmic::IR

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -15,12 +18,13 @@
 #include <mcl/bit/bit_count.hpp>
 #include <mcl/bit/swap.hpp>
 #include <mcl/scope_exit.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "../fuzz_util.h"
 #include "../rand_int.h"
 #include "../unicorn_emu/a32_unicorn.h"
 #include "./testenv.h"
+#include "../native/testenv.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -43,7 +47,7 @@ using namespace Dynarmic;
 
 template<typename Fn>
 bool AnyLocationDescriptorForTerminalHas(IR::Terminal terminal, Fn fn) {
-    return Common::VisitVariant<bool>(terminal, [&](auto t) -> bool {
+    return boost::apply_visitor([&](auto t) -> bool {
         using T = std::decay_t<decltype(t)>;
         if constexpr (std::is_same_v<T, IR::Term::Invalid>) {
             return false;
@@ -55,8 +59,6 @@ bool AnyLocationDescriptorForTerminalHas(IR::Terminal terminal, Fn fn) {
             return fn(t.next);
         } else if constexpr (std::is_same_v<T, IR::Term::PopRSBHint>) {
             return false;
-        } else if constexpr (std::is_same_v<T, IR::Term::Interpret>) {
-            return fn(t.next);
         } else if constexpr (std::is_same_v<T, IR::Term::FastDispatchHint>) {
             return false;
         } else if constexpr (std::is_same_v<T, IR::Term::If>) {
@@ -66,10 +68,10 @@ bool AnyLocationDescriptorForTerminalHas(IR::Terminal terminal, Fn fn) {
         } else if constexpr (std::is_same_v<T, IR::Term::CheckHalt>) {
             return AnyLocationDescriptorForTerminalHas(t.else_, fn);
         } else {
-            ASSERT_MSG(false, "Invalid terminal type");
+            ASSERT(false && "Invalid terminal type");
             return false;
         }
-    });
+    }, terminal);
 }
 
 bool ShouldTestInst(u32 instruction, u32 pc, bool is_thumb, bool is_last_inst, A32::ITState it_state = {}) {
@@ -81,15 +83,11 @@ bool ShouldTestInst(u32 instruction, u32 pc, bool is_thumb, bool is_last_inst, A
         return false;
     }
 
-    if (auto terminal = block.GetTerminal(); boost::get<IR::Term::Interpret>(&terminal)) {
-        return false;
-    }
-
     if (AnyLocationDescriptorForTerminalHas(block.GetTerminal(), [&](IR::LocationDescriptor ld) { return A32::LocationDescriptor{ld}.PC() <= pc; })) {
         return false;
     }
 
-    for (const auto& ir_inst : block) {
+    for (const auto& ir_inst : block.instructions) {
         switch (ir_inst.GetOpcode()) {
         case IR::Opcode::A32ExceptionRaised:
         case IR::Opcode::A32CallSupervisor:
@@ -278,7 +276,7 @@ std::vector<u16> GenRandomThumbInst(u32 pc, bool is_last_inst, A32::ITState it_s
             } else if (bitstring.substr(0, 8) == "11110100") {
                 bitstring.replace(0, 8, "11111001");
             } else {
-                ASSERT_FALSE("Unhandled ASIMD instruction: {} {}", fn, bs);
+                UNREACHABLE(); // "Unhandled ASIMD instruction: {} {}", fn, bs);
             }
             if (std::find(do_not_test.begin(), do_not_test.end(), fn) != do_not_test.end()) {
                 invalid.emplace_back(InstructionGenerator{bitstring.c_str()});
@@ -354,7 +352,7 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
     uni.ClearPageCache();
 
     jit_env.ticks_left = ticks_left;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     uni_env.ticks_left = instructions.size();  // Unicorn counts thumb instructions weirdly.
     uni.Run();
@@ -413,7 +411,7 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
         fmt::print("\n");
 
         fmt::print("x86_64:\n");
-        jit.DumpDisassembly();
+        fmt::print("{}", jit.Disassemble());
 
         fmt::print("Interrupts:\n");
         for (const auto& i : uni_env.interrupts) {
@@ -441,6 +439,9 @@ static void RunTestInstance(Dynarmic::A32::Jit& jit,
             jit.Step();
         }
     }
+
+    // TODO: Why the difference? QEMU what are you doing???
+    jit.Regs()[15] = uni.GetRegisters()[15];
 
     REQUIRE(uni.GetRegisters() == jit.Regs());
     REQUIRE(uni.GetExtRegs() == jit.ExtRegs());

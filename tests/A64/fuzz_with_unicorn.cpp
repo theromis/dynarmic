@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -10,12 +13,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <mcl/scope_exit.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "../fuzz_util.h"
 #include "../rand_int.h"
 #include "../unicorn_emu/a64_unicorn.h"
 #include "./testenv.h"
+#include "../native/testenv.h"
 #include "dynarmic/common/fp/fpcr.h"
 #include "dynarmic/common/fp/fpsr.h"
 #include "dynarmic/common/llvm_disassemble.h"
@@ -25,7 +29,7 @@
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/opcodes.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 // Must be declared last for all necessary operator<< to be declared prior to this.
 #include <fmt/format.h>
@@ -39,9 +43,7 @@ static bool ShouldTestInst(u32 instruction, u64 pc, bool is_last_inst) {
     bool should_continue = A64::TranslateSingleInstruction(block, location, instruction);
     if (!should_continue && !is_last_inst)
         return false;
-    if (auto terminal = block.GetTerminal(); boost::get<IR::Term::Interpret>(&terminal))
-        return false;
-    for (const auto& ir_inst : block) {
+    for (const auto& ir_inst : block.instructions) {
         switch (ir_inst.GetOpcode()) {
         case IR::Opcode::A64ExceptionRaised:
         case IR::Opcode::A64CallSupervisor:
@@ -88,6 +90,9 @@ static u32 GenRandomInst(u64 pc, bool is_last_inst) {
             "MSR_reg",
             "MSR_imm",
             "MRS",
+            // Does not need test
+            "SVC",
+            "BRK"
         };
 
         for (const auto& [fn, bitstring] : list) {
@@ -154,7 +159,8 @@ static u32 GenFloatInst(u64 pc, bool is_last_inst) {
 }
 
 static Dynarmic::A64::UserConfig GetUserConfig(A64TestEnv& jit_env) {
-    Dynarmic::A64::UserConfig jit_user_config{&jit_env};
+    Dynarmic::A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &jit_env;
     jit_user_config.optimizations &= ~OptimizationFlag::FastDispatch;
     // The below corresponds to the settings for qemu's aarch64_max_initfn
     jit_user_config.dczid_el0 = 7;
@@ -194,9 +200,9 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     uni.ClearPageCache();
 
     jit_env.ticks_left = instructions.size();
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
-    uni_env.ticks_left = instructions.size();
+    uni_env.ticks_left = instructions.size() * 4;
     uni.Run();
 
     SCOPE_FAIL {
@@ -264,22 +270,14 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
 
         const auto get_code = [&jit_env](u64 vaddr) { return jit_env.MemoryReadCode(vaddr); };
         IR::Block ir_block = A64::Translate({instructions_start, FP::FPCR{fpcr}}, get_code, {});
-        Optimization::A64CallbackConfigPass(ir_block, GetUserConfig(jit_env));
-        Optimization::NamingPass(ir_block);
-
         fmt::print("IR:\n");
         fmt::print("{}\n", IR::DumpBlock(ir_block));
-
-        Optimization::A64GetSetElimination(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-        Optimization::ConstantPropagation(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-
+        Optimization::Optimize(ir_block, conf, {});
         fmt::print("Optimized IR:\n");
         fmt::print("{}\n", IR::DumpBlock(ir_block));
 
         fmt::print("x86_64:\n");
-        jit.DumpDisassembly();
+        fmt::print("{}", jit.Disassemble());
 
         fmt::print("Interrupts:\n");
         for (auto& i : uni_env.interrupts) {
@@ -292,7 +290,7 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
         return;
     }
 
-    REQUIRE(uni.GetPC() == jit.GetPC());
+    REQUIRE(uni.GetPC() + 4 == jit.GetPC());
     REQUIRE(uni.GetRegisters() == jit.GetRegisters());
     REQUIRE(uni.GetVectors() == jit.GetVectors());
     REQUIRE(uni.GetSP() == jit.GetSP());
@@ -302,7 +300,7 @@ static void RunTestInstance(Dynarmic::A64::Jit& jit, A64Unicorn& uni, A64TestEnv
     REQUIRE(FP::FPSR{uni.GetFpsr()}.QC() == FP::FPSR{jit.GetFpsr()}.QC());
 }
 
-TEST_CASE("A64: Single random instruction", "[a64]") {
+TEST_CASE("A64: Single random instruction", "[a64][unicorn]") {
     A64TestEnv jit_env{};
     A64TestEnv uni_env{};
 
@@ -329,7 +327,7 @@ TEST_CASE("A64: Single random instruction", "[a64]") {
     }
 }
 
-TEST_CASE("A64: Floating point instructions", "[a64]") {
+TEST_CASE("A64: Floating point instructions", "[a64][unicorn]") {
     A64TestEnv jit_env{};
     A64TestEnv uni_env{};
 
@@ -454,7 +452,7 @@ TEST_CASE("A64: Floating point instructions", "[a64]") {
     }
 }
 
-TEST_CASE("A64: Small random block", "[a64]") {
+TEST_CASE("A64: Small random block", "[a64][unicorn]") {
     A64TestEnv jit_env{};
     A64TestEnv uni_env{};
 
@@ -489,7 +487,7 @@ TEST_CASE("A64: Small random block", "[a64]") {
     }
 }
 
-TEST_CASE("A64: Large random block", "[a64]") {
+TEST_CASE("A64: Large random block", "[a64][unicorn]") {
     A64TestEnv jit_env{};
     A64TestEnv uni_env{};
 

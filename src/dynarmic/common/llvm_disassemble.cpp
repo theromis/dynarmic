@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -12,18 +15,17 @@
 #    include <llvm-c/Target.h>
 #endif
 
-#include <mcl/assert.hpp>
-#include <mcl/bit_cast.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/assert.h"
+#include <bit>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/common/llvm_disassemble.h"
 
 namespace Dynarmic::Common {
 
 std::string DisassembleX64(const void* begin, const void* end) {
-    std::string result;
-
 #ifdef DYNARMIC_USE_LLVM
+    std::string result;
     LLVMInitializeX86TargetInfo();
     LLVMInitializeX86TargetMC();
     LLVMInitializeX86Disassembler();
@@ -48,18 +50,17 @@ std::string DisassembleX64(const void* begin, const void* end) {
     }
 
     LLVMDisasmDispose(llvm_ctx);
-#else
-    result += fmt::format("(recompile with DYNARMIC_USE_LLVM=ON to disassemble the generated x86_64 code)\n");
-    result += fmt::format("start: {:016x}, end: {:016x}\n", mcl::bit_cast<u64>(begin), mcl::bit_cast<u64>(end));
-#endif
-
     return result;
+#else
+    return fmt::format(
+        "(recompile with DYNARMIC_USE_LLVM=ON to disassemble the generated x86_64 code)\n"
+        "start: {:016x}, end: {:016x}\n", std::bit_cast<u64>(begin), std::bit_cast<u64>(end));
+#endif
 }
 
 std::string DisassembleAArch32([[maybe_unused]] bool is_thumb, [[maybe_unused]] u32 pc, [[maybe_unused]] const u8* instructions, [[maybe_unused]] size_t length) {
-    std::string result;
-
 #ifdef DYNARMIC_USE_LLVM
+    std::string result;
     LLVMInitializeARMTargetInfo();
     LLVMInitializeARMTargetMC();
     LLVMInitializeARMDisassembler();
@@ -94,16 +95,14 @@ std::string DisassembleAArch32([[maybe_unused]] bool is_thumb, [[maybe_unused]] 
     }
 
     LLVMDisasmDispose(llvm_ctx);
-#else
-    result += fmt::format("(disassembly disabled)\n");
-#endif
-
     return result;
+#else
+    return fmt::format("(disassembly disabled)\n");
+#endif
 }
 
 std::string DisassembleAArch64([[maybe_unused]] u32 instruction, [[maybe_unused]] u64 pc) {
     std::string result;
-
 #ifdef DYNARMIC_USE_LLVM
     LLVMInitializeAArch64TargetInfo();
     LLVMInitializeAArch64TargetMC();
@@ -118,11 +117,10 @@ std::string DisassembleAArch64([[maybe_unused]] u32 instruction, [[maybe_unused]
     result += '\n';
 
     LLVMDisasmDispose(llvm_ctx);
-#else
-    result += fmt::format("(disassembly disabled)\n");
-#endif
-
     return result;
+#else
+    return fmt::format("(disassembly disabled)\n");
+#endif
 }
 
 }  // namespace Dynarmic::Common

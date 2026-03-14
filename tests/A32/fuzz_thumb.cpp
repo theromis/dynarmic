@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -14,19 +17,19 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <mcl/bit/bit_field.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "../rand_int.h"
 #include "../unicorn_emu/a32_unicorn.h"
 #include "./testenv.h"
+#include "../native/testenv.h"
 #include "dynarmic/frontend/A32/FPSCR.h"
 #include "dynarmic/frontend/A32/PSR.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
-#include "dynarmic/frontend/A32/disassembler/disassembler.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/ir/basic_block.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 using namespace Dynarmic;
 
@@ -127,7 +130,7 @@ static void RunInstance(size_t run_number, ThumbTestEnv& test_env, A32Unicorn<Th
     test_env.code_mem_modified_by_guest = false;
     test_env.modified_memory.clear();
     test_env.ticks_left = instructions_to_execute_count;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
     const bool jit_code_memory_modified = test_env.code_mem_modified_by_guest;
     const auto jit_write_records = test_env.modified_memory;
     test_env.code_mem_modified_by_guest = false;
@@ -176,16 +179,10 @@ static void RunInstance(size_t run_number, ThumbTestEnv& test_env, A32Unicorn<Th
         while (num_insts < instructions_to_execute_count) {
             A32::LocationDescriptor descriptor = {u32(num_insts * 4), cpsr, A32::FPSCR{}};
             IR::Block ir_block = A32::Translate(descriptor, &test_env, {});
-            Optimization::NamingPass(ir_block);
-            Optimization::A32GetSetElimination(ir_block, {.convert_nz_to_nzc = true});
-            Optimization::DeadCodeElimination(ir_block);
-            Optimization::A32ConstantMemoryReads(ir_block, &test_env);
-            Optimization::ConstantPropagation(ir_block);
-            Optimization::DeadCodeElimination(ir_block);
-            Optimization::VerificationPass(ir_block);
+            Optimization::Optimize(ir_block, &test_env, {});
             printf("\n\nIR:\n%s", IR::DumpBlock(ir_block).c_str());
             printf("\n\nx86_64:\n");
-            jit.DumpDisassembly();
+            printf("%s", jit.Disassemble().c_str());
             num_insts += ir_block.CycleCount();
         }
 

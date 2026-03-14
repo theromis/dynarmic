@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2020 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,7 +11,7 @@
 #include <iostream>
 
 #include <catch2/catch_test_macros.hpp>
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 
 #include "dynarmic/frontend/A32/decoder/asimd.h"
 #include "dynarmic/frontend/A32/translate/impl/a32_translate_impl.h"
@@ -33,22 +36,12 @@ TEST_CASE("ASIMD Decoder: Ensure table order correctness", "[decode][a32][.]") {
 
     const auto is_decode_error = [&get_ir](const A32::ASIMDMatcher<A32::TranslatorVisitor>& matcher, u32 instruction) {
         const auto block = get_ir(matcher, instruction);
-
-        for (const auto& ir_inst : block) {
-            if (ir_inst.GetOpcode() == IR::Opcode::A32ExceptionRaised) {
-                if (static_cast<A32::Exception>(ir_inst.GetArg(1).GetU64()) == A32::Exception::DecodeError) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return std::find_if(block.instructions.cbegin(), block.instructions.cend(), [](auto const& e) {
+            return e.GetOpcode() == IR::Opcode::A32ExceptionRaised && A32::Exception(e.GetArg(1).GetU64()) == A32::Exception::DecodeError;
+        }) != block.instructions.cend();
     };
 
     for (auto iter = table.cbegin(); iter != table.cend(); ++iter) {
-        if (std::strncmp(iter->GetName(), "UNALLOCATED", 11) == 0) {
-            continue;
-        }
-
         const u32 expect = iter->GetExpected();
         const u32 mask = iter->GetMask();
         u32 x = 0;
@@ -56,15 +49,17 @@ TEST_CASE("ASIMD Decoder: Ensure table order correctness", "[decode][a32][.]") {
             const u32 instruction = expect | x;
 
             const bool iserr = is_decode_error(*iter, instruction);
-            const auto alternative = std::find_if(table.cbegin(), iter, [instruction](const auto& m) { return m.Matches(instruction); });
+            const auto alternative = std::find_if(table.cbegin(), iter, [instruction](const auto& m) {
+                return m.Matches(instruction);
+            });
             const bool altiserr = is_decode_error(*alternative, instruction);
 
             INFO("Instruction: " << std::hex << std::setfill('0') << std::setw(8) << instruction);
             INFO("Expect:      " << std::hex << std::setfill('0') << std::setw(8) << expect);
             INFO("Fill:        " << std::hex << std::setfill('0') << std::setw(8) << x);
-            INFO("Name:        " << iter->GetName());
+            INFO("Name:        " << *A32::GetNameASIMD<A32::TranslatorVisitor>(instruction));
             INFO("iserr:       " << iserr);
-            INFO("alternative: " << alternative->GetName());
+            //INFO("alternative: " << alternative->GetName());
             INFO("altiserr:    " << altiserr);
 
             REQUIRE(((!iserr && alternative == iter) || (iserr && alternative != iter && !altiserr)));

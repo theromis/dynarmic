@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2023 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -7,13 +10,13 @@
 
 #include <array>
 
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/backend/x64/stack_layout.h"
 
 namespace Dynarmic::Backend::X64 {
 
-enum class HostLoc;
+enum class HostLoc : std::uint8_t;
 using Vector = std::array<u64, 2>;
 
 #ifdef _MSC_VER

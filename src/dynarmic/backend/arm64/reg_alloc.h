@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -11,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-#include <mcl/assert.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/common/common_types.h"
 #include <mcl/type_traits/is_instance_of_template.hpp>
 #include <oaknut/oaknut.hpp>
-#include <tsl/robin_set.h>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/arm64/stack_layout.h"
 #include "dynarmic/ir/cond.h"
@@ -61,18 +64,18 @@ public:
     IR::AccType GetImmediateAccType() const;
 
     // Only valid if not immediate
-    HostLoc::Kind CurrentLocationKind() const;
-    bool IsInGpr() const { return !IsImmediate() && CurrentLocationKind() == HostLoc::Kind::Gpr; }
-    bool IsInFpr() const { return !IsImmediate() && CurrentLocationKind() == HostLoc::Kind::Fpr; }
+    HostLoc::Kind CurrentLocationKind(RegAlloc& reg_alloc) const;
+    bool IsInGpr(RegAlloc& reg_alloc) const {
+        return !IsImmediate() && CurrentLocationKind(reg_alloc) == HostLoc::Kind::Gpr;
+    }
+    bool IsInFpr(RegAlloc& reg_alloc) const {
+        return !IsImmediate() && CurrentLocationKind(reg_alloc) == HostLoc::Kind::Fpr;
+    }
 
 private:
     friend class RegAlloc;
-    explicit Argument(RegAlloc& reg_alloc)
-            : reg_alloc{reg_alloc} {}
-
-    bool allocated = false;
-    RegAlloc& reg_alloc;
     IR::Value value;
+    bool allocated = false;
 };
 
 struct FlagsTag final {
@@ -157,8 +160,12 @@ class RegAlloc final {
 public:
     using ArgumentInfo = std::array<Argument, IR::max_arg_count>;
 
-    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order)
-            : code{code}, fpsr_manager{fpsr_manager}, gpr_order{gpr_order}, fpr_order{fpr_order} {}
+    explicit RegAlloc(oaknut::CodeGenerator& code, FpsrManager& fpsr_manager, std::vector<int> gpr_order, std::vector<int> fpr_order) noexcept
+        : code{code}
+        , fpsr_manager{fpsr_manager}
+        , gpr_order{gpr_order}
+        , fpr_order{fpr_order}
+    {}
 
     ArgumentInfo GetArgumentInfo(IR::Inst* inst);
     bool WasValueDefined(IR::Inst* inst) const;
@@ -179,7 +186,7 @@ public:
         } else if constexpr (size == 32) {
             return ReadW(arg);
         } else {
-            ASSERT_FALSE("Invalid size to ReadReg {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -196,7 +203,7 @@ public:
         } else if constexpr (size == 8) {
             return ReadB(arg);
         } else {
-            ASSERT_FALSE("Invalid size to ReadVec {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -218,7 +225,7 @@ public:
         } else if constexpr (size == 32) {
             return WriteW(inst);
         } else {
-            ASSERT_FALSE("Invalid size to WriteReg {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -235,7 +242,7 @@ public:
         } else if constexpr (size == 8) {
             return WriteB(inst);
         } else {
-            ASSERT_FALSE("Invalid size to WriteVec {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -255,7 +262,7 @@ public:
         } else if constexpr (size == 32) {
             return ReadWriteW(arg, inst);
         } else {
-            ASSERT_FALSE("Invalid size to ReadWriteReg {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -272,7 +279,7 @@ public:
         } else if constexpr (size == 8) {
             return ReadWriteB(arg, inst);
         } else {
-            ASSERT_FALSE("Invalid size to ReadWriteVec {}", size);
+            UNREACHABLE();
         }
     }
 
@@ -299,17 +306,12 @@ public:
 
 private:
     friend struct Argument;
-    template<typename>
-    friend struct RAReg;
+    template<typename> friend struct RAReg;
 
-    template<HostLoc::Kind kind>
-    int GenerateImmediate(const IR::Value& value);
-    template<HostLoc::Kind kind>
-    int RealizeReadImpl(const IR::Value& value);
-    template<HostLoc::Kind kind>
-    int RealizeWriteImpl(const IR::Inst* value);
-    template<HostLoc::Kind kind>
-    int RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value);
+    template<HostLoc::Kind kind> int GenerateImmediate(const IR::Value& value);
+    template<HostLoc::Kind kind> int RealizeReadImpl(const IR::Value& value);
+    template<HostLoc::Kind kind> int RealizeWriteImpl(const IR::Inst* value);
+    template<HostLoc::Kind kind> int RealizeReadWriteImpl(const IR::Value& read_value, const IR::Inst* write_value);
 
     int AllocateRegister(const std::array<HostLocInfo, 32>& regs, const std::vector<int>& order) const;
     void SpillGpr(int index);
@@ -333,9 +335,8 @@ private:
     HostLocInfo flags;
     std::array<HostLocInfo, SpillCount> spills;
 
-    mutable size_t alloc_candidate_index{};
-
-    tsl::robin_set<const IR::Inst*> defined_insts;
+    mutable size_t alloc_candidate_index = 0;
+    ankerl::unordered_dense::set<const IR::Inst*> defined_insts;
 };
 
 template<typename T>
@@ -369,7 +370,7 @@ void RAReg<T>::Realize() {
         reg = T{reg_alloc.RealizeReadWriteImpl<kind>(read_value, write_value)};
         break;
     default:
-        ASSERT_FALSE("Invalid RWType");
+        UNREACHABLE();
     }
 }
 

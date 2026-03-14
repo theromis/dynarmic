@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2024 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -13,10 +16,10 @@
 
 #include <biscuit/assembler.hpp>
 #include <biscuit/registers.hpp>
-#include <mcl/assert.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/common/common_types.h"
 #include <mcl/type_traits/is_instance_of_template.hpp>
-#include <tsl/robin_set.h>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/riscv64/stack_layout.h"
 #include "dynarmic/ir/cond.h"
@@ -159,7 +162,7 @@ private:
     std::array<HostLocInfo, 32> fprs;
     std::array<HostLocInfo, SpillCount> spills;
 
-    mutable size_t alloc_candidate_index{};
+    mutable std::mt19937 rand_gen;
 };
 
 template<typename T>

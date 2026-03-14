@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2019 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -15,14 +18,14 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <mcl/assert.hpp>
-#include <mcl/bit_cast.hpp>
+#include "dynarmic/common/assert.h"
+#include <bit>
 #include <mcl/macro/architecture.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/backend/exception_handler.h"
 
-#if defined(MCL_ARCHITECTURE_X86_64)
+#if defined(ARCHITECTURE_x86_64)
 
 #    include "dynarmic/backend/x64/block_of_code.h"
 #    define mig_external extern "C"
@@ -33,7 +36,7 @@
 
 using dynarmic_thread_state_t = x86_thread_state64_t;
 
-#elif defined(MCL_ARCHITECTURE_ARM64)
+#elif defined(ARCHITECTURE_arm64)
 
 #    include <oaknut/code_block.hpp>
 #    define mig_external extern "C"
@@ -85,16 +88,14 @@ private:
 };
 
 MachHandler::MachHandler() {
-#define KCHECK(x) ASSERT_MSG((x) == KERN_SUCCESS, "dynarmic: macOS MachHandler: init failure at {}", #x)
-
+#define KCHECK(x) ASSERT((x) == KERN_SUCCESS && "init failure at " #x)
     KCHECK(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &server_port));
     KCHECK(mach_port_insert_right(mach_task_self(), server_port, server_port, MACH_MSG_TYPE_MAKE_SEND));
     KCHECK(task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, server_port, EXCEPTION_STATE | MACH_EXCEPTION_CODES, THREAD_STATE));
-
-    // The below doesn't actually work, and I'm not sure why; since this doesn't work we'll have a spurious error message upon shutdown.
+    // The below doesn't actually work, and I'm not sure why; since this doesn't work we'll have a spurious
+    // error message upon shutdown.
     mach_port_t prev;
     KCHECK(mach_port_request_notification(mach_task_self(), server_port, MACH_NOTIFY_PORT_DESTROYED, 0, server_port, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev));
-
 #undef KCHECK
 
     thread = std::thread(&MachHandler::MessagePump, this);
@@ -130,7 +131,7 @@ void MachHandler::MessagePump() {
     }
 }
 
-#if defined(MCL_ARCHITECTURE_X86_64)
+#if defined(ARCHITECTURE_x86_64)
 kern_return_t MachHandler::HandleRequest(x86_thread_state64_t* ts) {
     std::lock_guard<std::mutex> guard(code_block_infos_mutex);
 
@@ -143,12 +144,12 @@ kern_return_t MachHandler::HandleRequest(x86_thread_state64_t* ts) {
     FakeCall fc = iter->cb(ts->__rip);
 
     ts->__rsp -= sizeof(u64);
-    *mcl::bit_cast<u64*>(ts->__rsp) = fc.ret_rip;
+    *std::bit_cast<u64*>(ts->__rsp) = fc.ret_rip;
     ts->__rip = fc.call_rip;
 
     return KERN_SUCCESS;
 }
-#elif defined(MCL_ARCHITECTURE_ARM64)
+#elif defined(ARCHITECTURE_arm64)
 kern_return_t MachHandler::HandleRequest(arm_thread_state64_t* ts) {
     std::lock_guard<std::mutex> guard(code_block_infos_mutex);
 
@@ -266,15 +267,15 @@ private:
 ExceptionHandler::ExceptionHandler() = default;
 ExceptionHandler::~ExceptionHandler() = default;
 
-#if defined(MCL_ARCHITECTURE_X86_64)
+#if defined(ARCHITECTURE_x86_64)
 void ExceptionHandler::Register(X64::BlockOfCode& code) {
-    const u64 code_begin = mcl::bit_cast<u64>(code.getCode());
+    const u64 code_begin = std::bit_cast<u64>(code.getCode());
     const u64 code_end = code_begin + code.GetTotalCodeSize();
     impl = std::make_unique<Impl>(code_begin, code_end);
 }
-#elif defined(MCL_ARCHITECTURE_ARM64)
+#elif defined(ARCHITECTURE_arm64)
 void ExceptionHandler::Register(oaknut::CodeBlock& mem, std::size_t size) {
-    const u64 code_begin = mcl::bit_cast<u64>(mem.ptr());
+    const u64 code_begin = std::bit_cast<u64>(mem.ptr());
     const u64 code_end = code_begin + size;
     impl = std::make_unique<Impl>(code_begin, code_end);
 }

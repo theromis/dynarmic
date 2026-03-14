@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -21,9 +24,9 @@
 #include <array>
 #include <cstring>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
-#include <xbyak/xbyak.h>
+#include "dynarmic/backend/x64/xbyak.h"
 
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/abi.h"
@@ -33,6 +36,7 @@
 
 namespace Dynarmic::Backend::X64 {
 
+const Xbyak::Reg64 BlockOfCode::ABI_JIT_PTR = HostLocToReg64(Dynarmic::Backend::X64::ABI_JIT_PTR);
 #ifdef _WIN32
 const Xbyak::Reg64 BlockOfCode::ABI_RETURN = HostLocToReg64(Dynarmic::Backend::X64::ABI_RETURN);
 const Xbyak::Reg64 BlockOfCode::ABI_PARAM1 = HostLocToReg64(Dynarmic::Backend::X64::ABI_PARAM1);
@@ -63,7 +67,8 @@ public:
     uint8_t* alloc(size_t size) override {
         void* p = VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_READWRITE);
         if (p == nullptr) {
-            throw Xbyak::Error(Xbyak::ERR_CANT_ALLOC);
+            using Xbyak::Error;
+            XBYAK_THROW(Xbyak::ERR_CANT_ALLOC);
         }
         return static_cast<uint8_t*>(p);
     }
@@ -82,20 +87,27 @@ public:
         // Waste a page to store the size
         size += DYNARMIC_PAGE_SIZE;
 
-#    if defined(MAP_ANONYMOUS)
-        int mode = MAP_PRIVATE | MAP_ANONYMOUS;
-#    elif defined(MAP_ANON)
-        int mode = MAP_PRIVATE | MAP_ANON;
-#    else
-#        error "not supported"
-#    endif
-#    ifdef MAP_JIT
+        int mode = MAP_PRIVATE;
+#if defined(MAP_ANONYMOUS)
+        mode |= MAP_ANONYMOUS;
+#elif defined(MAP_ANON)
+        mode |= MAP_ANON;
+#else
+#   error "not supported"
+#endif
+#ifdef MAP_JIT
         mode |= MAP_JIT;
-#    endif
-
-        void* p = mmap(nullptr, size, PROT_READ | PROT_WRITE, mode, -1, 0);
+#endif
+        int prot = PROT_READ | PROT_WRITE;
+#ifdef PROT_MPROTECT
+        // https://man.netbsd.org/mprotect.2 specifies that an mprotect() that is LESS
+        // restrictive than the original mapping MUST fail
+        prot |= PROT_MPROTECT(PROT_READ) | PROT_MPROTECT(PROT_WRITE) | PROT_MPROTECT(PROT_EXEC);
+#endif
+        void* p = mmap(nullptr, size, prot, mode, -1, 0);
         if (p == MAP_FAILED) {
-            throw Xbyak::Error(Xbyak::ERR_CANT_ALLOC);
+            using Xbyak::Error;
+            XBYAK_THROW(Xbyak::ERR_CANT_ALLOC);
         }
         std::memcpy(p, &size, sizeof(size_t));
         return static_cast<uint8_t*>(p) + DYNARMIC_PAGE_SIZE;
@@ -182,6 +194,8 @@ HostFeature GetHostFeatures() {
         features |= HostFeature::LZCNT;
     if (cpu_info.has(Cpu::tGFNI))
         features |= HostFeature::GFNI;
+    if (cpu_info.has(Cpu::tWAITPKG))
+        features |= HostFeature::WAITPKG;
 
     if (cpu_info.has(Cpu::tBMI2)) {
         // BMI2 instructions such as pdep and pext have been very slow up until Zen 3.
@@ -219,8 +233,14 @@ bool IsUnderRosetta() {
 
 }  // anonymous namespace
 
+#ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+static const auto default_cg_mode = Xbyak::DontSetProtectRWE;
+#else
+static const auto default_cg_mode = nullptr; //Allow RWE
+#endif
+
 BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_code_size, std::function<void(BlockOfCode&)> rcp)
-        : Xbyak::CodeGenerator(total_code_size, nullptr, &s_allocator)
+        : Xbyak::CodeGenerator(total_code_size, default_cg_mode, &s_allocator)
         , cb(std::move(cb))
         , jsi(jsi)
         , constant_pool(*this, CONSTANT_POOL_SIZE)
@@ -317,8 +337,8 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     //    that the stack is appropriately aligned for CALLs.
     ABI_PushCalleeSaveRegistersAndAdjustStack(*this, sizeof(StackLayout));
 
-    mov(r15, ABI_PARAM1);
-    mov(rbx, ABI_PARAM2);  // save temporarily in non-volatile register
+    mov(ABI_JIT_PTR, ABI_PARAM1);
+    mov(rbx, ABI_PARAM2); // save temporarily in non-volatile register
 
     if (cb.enable_cycle_counting) {
         cb.GetTicksRemaining->EmitCall(*this);
@@ -326,9 +346,11 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
         mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], ABI_RETURN);
     }
 
+    // r14 = page table
+    // r13 = fastmem pointer
     rcp(*this);
 
-    cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
+    cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);
 
     SwitchMxcsrOnEntry();
@@ -339,7 +361,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
 
     ABI_PushCalleeSaveRegistersAndAdjustStack(*this, sizeof(StackLayout));
 
-    mov(r15, ABI_PARAM1);
+    mov(ABI_JIT_PTR, ABI_PARAM1);
 
     if (cb.enable_cycle_counting) {
         mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], 1);
@@ -348,10 +370,9 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
 
     rcp(*this);
 
-    cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
+    cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);
-    lock();
-    or_(dword[r15 + jsi.offsetof_halt_reason], static_cast<u32>(HaltReason::Step));
+    lock(); or_(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], u32(HaltReason::Step));
 
     SwitchMxcsrOnEntry();
     jmp(ABI_PARAM2);
@@ -361,7 +382,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     align();
     return_from_run_code[0] = getCurr<const void*>();
 
-    cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
+    cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller);
     if (cb.enable_cycle_counting) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
@@ -373,7 +394,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     align();
     return_from_run_code[MXCSR_ALREADY_EXITED] = getCurr<const void*>();
 
-    cmp(dword[r15 + jsi.offsetof_halt_reason], 0);
+    cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited);
     if (cb.enable_cycle_counting) {
         cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
@@ -401,8 +422,7 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     }
 
     xor_(eax, eax);
-    lock();
-    xchg(dword[r15 + jsi.offsetof_halt_reason], eax);
+    xchg(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], eax);
 
     ABI_PopCalleeSaveRegistersAndAdjustStack(*this, sizeof(StackLayout));
     ret();
@@ -412,22 +432,22 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
 
 void BlockOfCode::SwitchMxcsrOnEntry() {
     stmxcsr(dword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, save_host_MXCSR)]);
-    ldmxcsr(dword[r15 + jsi.offsetof_guest_MXCSR]);
+    ldmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_guest_MXCSR]);
 }
 
 void BlockOfCode::SwitchMxcsrOnExit() {
-    stmxcsr(dword[r15 + jsi.offsetof_guest_MXCSR]);
+    stmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_guest_MXCSR]);
     ldmxcsr(dword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, save_host_MXCSR)]);
 }
 
 void BlockOfCode::EnterStandardASIMD() {
-    stmxcsr(dword[r15 + jsi.offsetof_guest_MXCSR]);
-    ldmxcsr(dword[r15 + jsi.offsetof_asimd_MXCSR]);
+    stmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_guest_MXCSR]);
+    ldmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_asimd_MXCSR]);
 }
 
 void BlockOfCode::LeaveStandardASIMD() {
-    stmxcsr(dword[r15 + jsi.offsetof_asimd_MXCSR]);
-    ldmxcsr(dword[r15 + jsi.offsetof_guest_MXCSR]);
+    stmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_asimd_MXCSR]);
+    ldmxcsr(dword[ABI_JIT_PTR + jsi.offsetof_guest_MXCSR]);
 }
 
 void BlockOfCode::UpdateTicks() {
@@ -495,8 +515,7 @@ void BlockOfCode::LoadRequiredFlagsForCondFromRax(IR::Cond cond) {
     case IR::Cond::NV:
         break;
     default:
-        ASSERT_MSG(false, "Unknown cond {}", static_cast<size_t>(cond));
-        break;
+        UNREACHABLE();
     }
 }
 
@@ -514,7 +533,8 @@ size_t BlockOfCode::GetTotalCodeSize() const {
 
 void* BlockOfCode::AllocateFromCodeSpace(size_t alloc_size) {
     if (size_ + alloc_size >= maxSize_) {
-        throw Xbyak::Error(Xbyak::ERR_CODE_IS_TOO_BIG);
+        using Xbyak::Error;
+        XBYAK_THROW(Xbyak::ERR_CODE_IS_TOO_BIG);
     }
 
     EnsureMemoryCommitted(alloc_size);

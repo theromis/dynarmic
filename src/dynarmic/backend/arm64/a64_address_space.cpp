@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -15,7 +18,7 @@
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/interface/A64/config.h"
 #include "dynarmic/interface/exclusive_monitor.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 namespace Dynarmic::Backend::Arm64 {
 
@@ -89,9 +92,9 @@ static void* EmitExclusiveReadCallTrampoline(oaknut::CodeGenerator& code, const 
 
     code.align(8);
     code.l(l_this);
-    code.dx(mcl::bit_cast<u64>(&conf));
+    code.dx(std::bit_cast<u64>(&conf));
     code.l(l_addr);
-    code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+    code.dx(std::bit_cast<u64>(Common::FptrCast(fn)));
 
     return target;
 }
@@ -147,9 +150,9 @@ static void* EmitExclusiveWriteCallTrampoline(oaknut::CodeGenerator& code, const
 
     code.align(8);
     code.l(l_this);
-    code.dx(mcl::bit_cast<u64>(&conf));
+    code.dx(std::bit_cast<u64>(&conf));
     code.l(l_addr);
-    code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+    code.dx(std::bit_cast<u64>(Common::FptrCast(fn)));
 
     return target;
 }
@@ -232,9 +235,9 @@ static void* EmitExclusiveRead128CallTrampoline(oaknut::CodeGenerator& code, con
 
     code.align(8);
     code.l(l_this);
-    code.dx(mcl::bit_cast<u64>(&conf));
+    code.dx(std::bit_cast<u64>(&conf));
     code.l(l_addr);
-    code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+    code.dx(std::bit_cast<u64>(Common::FptrCast(fn)));
 
     return target;
 }
@@ -314,9 +317,9 @@ static void* EmitExclusiveWrite128CallTrampoline(oaknut::CodeGenerator& code, co
 
     code.align(8);
     code.l(l_this);
-    code.dx(mcl::bit_cast<u64>(&conf));
+    code.dx(std::bit_cast<u64>(&conf));
     code.l(l_addr);
-    code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+    code.dx(std::bit_cast<u64>(Common::FptrCast(fn)));
 
     return target;
 }
@@ -327,27 +330,11 @@ A64AddressSpace::A64AddressSpace(const A64::UserConfig& conf)
     EmitPrelude();
 }
 
-IR::Block A64AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
+void A64AddressSpace::GenerateIR(IR::Block& ir_block, IR::LocationDescriptor descriptor) const {
+    ir_block.Reset(descriptor);
     const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
-    IR::Block ir_block = A64::Translate(A64::LocationDescriptor{descriptor}, get_code,
-                                        {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
-
-    Optimization::A64CallbackConfigPass(ir_block, conf);
-    Optimization::NamingPass(ir_block);
-    if (conf.HasOptimization(OptimizationFlag::GetSetElimination) && !conf.check_halt_on_memory_access) {
-        Optimization::A64GetSetElimination(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-        Optimization::ConstantPropagation(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    if (conf.HasOptimization(OptimizationFlag::MiscIROpt)) {
-        Optimization::A64MergeInterpretBlocksPass(ir_block, conf.callbacks);
-    }
-    Optimization::VerificationPass(ir_block);
-
-    return ir_block;
+    A64::Translate(ir_block, A64::LocationDescriptor{descriptor}, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
+    Optimization::Optimize(ir_block, conf, {});
 }
 
 void A64AddressSpace::InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges) {
@@ -408,7 +395,7 @@ void A64AddressSpace::EmitPrelude() {
         code.MOV(Xstate, X1);
         code.MOV(Xhalt, X2);
         if (conf.page_table) {
-            code.MOV(Xpagetable, mcl::bit_cast<u64>(conf.page_table));
+            code.MOV(Xpagetable, std::bit_cast<u64>(conf.page_table));
         }
         if (conf.fastmem_pointer) {
             code.MOV(Xfastmem, *conf.fastmem_pointer);
@@ -446,7 +433,7 @@ void A64AddressSpace::EmitPrelude() {
         code.MOV(Xstate, X1);
         code.MOV(Xhalt, X2);
         if (conf.page_table) {
-            code.MOV(Xpagetable, mcl::bit_cast<u64>(conf.page_table));
+            code.MOV(Xpagetable, std::bit_cast<u64>(conf.page_table));
         }
         if (conf.fastmem_pointer) {
             code.MOV(Xfastmem, *conf.fastmem_pointer);
@@ -504,9 +491,9 @@ void A64AddressSpace::EmitPrelude() {
 
         code.align(8);
         code.l(l_this);
-        code.dx(mcl::bit_cast<u64>(this));
+        code.dx(std::bit_cast<u64>(this));
         code.l(l_addr);
-        code.dx(mcl::bit_cast<u64>(Common::FptrCast(fn)));
+        code.dx(std::bit_cast<u64>(Common::FptrCast(fn)));
     }
 
     prelude_info.return_from_run_code = code.xptr<void*>();
@@ -534,7 +521,7 @@ void A64AddressSpace::EmitPrelude() {
 
     code.align(8);
     code.l(l_return_to_dispatcher);
-    code.dx(mcl::bit_cast<u64>(prelude_info.return_to_dispatcher));
+    code.dx(std::bit_cast<u64>(prelude_info.return_to_dispatcher));
 
     prelude_info.end_of_prelude = code.offset();
 
@@ -556,9 +543,10 @@ EmitConfig A64AddressSpace::GetEmitConfig() {
 
         .check_halt_on_memory_access = conf.check_halt_on_memory_access,
 
-        .page_table_pointer = mcl::bit_cast<u64>(conf.page_table),
+        .page_table_pointer = std::bit_cast<u64>(conf.page_table),
         .page_table_address_space_bits = conf.page_table_address_space_bits,
         .page_table_pointer_mask_bits = conf.page_table_pointer_mask_bits,
+        .page_table_log2_stride = conf.page_table_log2_stride,
         .silently_mirror_page_table = conf.silently_mirror_page_table,
         .absolute_offset_page_table = conf.absolute_offset_page_table,
         .detect_misaligned_access_via_page_table = conf.detect_misaligned_access_via_page_table,

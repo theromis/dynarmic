@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,8 +11,8 @@
 #include <array>
 #include <type_traits>
 
-#include <mcl/assert.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/ir/type.h"
 
@@ -29,16 +32,13 @@ class Inst;
 enum class AccType;
 enum class Cond;
 
-/**
- * A representation of a value in the IR.
- * A value may either be an immediate or the result of a microinstruction.
- */
+/// @brief A representation of a value in the IR.
+/// A value may either be an immediate or the result of a microinstruction.
 class Value {
 public:
     using CoprocessorInfo = std::array<u8, 8>;
 
-    Value()
-            : type(Type::Void) {}
+    inline Value() noexcept : type(Type::Void) {}
     explicit Value(Inst* value);
     explicit Value(A32::Reg value);
     explicit Value(A32::ExtReg value);
@@ -55,10 +55,10 @@ public:
 
     static Value EmptyNZCVImmediateMarker();
 
-    bool IsIdentity() const;
-    bool IsEmpty() const;
-    bool IsImmediate() const;
-    Type GetType() const;
+    bool IsIdentity() const noexcept;
+    bool IsEmpty() const noexcept;
+    bool IsImmediate() const noexcept;
+    Type GetType() const noexcept;
 
     Inst* GetInst() const;
     Inst* GetInstRecursive() const;
@@ -75,64 +75,52 @@ public:
     Cond GetCond() const;
     AccType GetAccType() const;
 
-    /**
-     * Retrieves the immediate of a Value instance as a signed 64-bit value.
-     *
-     * @pre The value contains either a U1, U8, U16, U32, or U64 value.
-     *      Breaking this precondition will cause an assertion to be invoked.
-     */
+    /// @brief Retrieves the immediate of a Value instance as a signed 64-bit value.
+    /// @pre The value contains either a U1, U8, U16, U32, or U64 value.
+    ///      Breaking this precondition will cause an assertion to be invoked.
     s64 GetImmediateAsS64() const;
 
-    /**
-     * Retrieves the immediate of a Value instance as an unsigned 64-bit value.
-     *
-     * @pre The value contains either a U1, U8, U16, U32, or U64 value.
-     *      Breaking this precondition will cause an assertion to be invoked.
-     */
+    /// @brief Retrieves the immediate of a Value instance as an unsigned 64-bit value.
+    /// @pre The value contains either a U1, U8, U16, U32, or U64 value.
+    ///      Breaking this precondition will cause an assertion to be invoked.
     u64 GetImmediateAsU64() const;
 
-    /**
-     * Determines whether or not the contained value matches the provided signed one.
-     *
-     * Note that this function will always return false if the contained
-     * value is not a a constant value. In other words, if IsImmediate()
-     * would return false on an instance, then so will this function.
-     *
-     * @param value The value to check against the contained value.
-     */
-    bool IsSignedImmediate(s64 value) const;
+    /// @brief Determines whether or not the contained value matches the provided signed one.
+    /// Note that this function will always return false if the contained
+    /// value is not a a constant value. In other words, if IsImmediate()
+    /// would return false on an instance, then so will this function.
+    /// @param value The value to check against the contained value.
+    inline bool IsSignedImmediate(s64 value) const noexcept {
+        return IsImmediate() && GetImmediateAsS64() == value;
+    }
 
-    /**
-     * Determines whether or not the contained value matches the provided unsigned one.
-     *
-     * Note that this function will always return false if the contained
-     * value is not a a constant value. In other words, if IsImmediate()
-     * would return false on an instance, then so will this function.
-     *
-     * @param value The value to check against the contained value.
-     */
-    bool IsUnsignedImmediate(u64 value) const;
+    /// @brief Determines whether or not the contained value matches the provided unsigned one.
+    ///
+    /// Note that this function will always return false if the contained
+    /// value is not a a constant value. In other words, if IsImmediate()
+    /// would return false on an instance, then so will this function.
+    /// @param value The value to check against the contained value.
+    inline bool IsUnsignedImmediate(u64 value) const noexcept {
+        return IsImmediate() && GetImmediateAsU64() == value;
+    }
 
-    /**
-     * Determines whether or not the contained constant value has all bits set.
-     *
-     * @pre The value contains either a U1, U8, U16, U32, or U64 value.
-     *      Breaking this precondition will cause an assertion to be invoked.
-     */
-    bool HasAllBitsSet() const;
+    /// @brief Determines whether or not the contained constant value has all bits set.
+    /// @pre The value contains either a U1, U8, U16, U32, or U64 value.
+    ///      Breaking this precondition will cause an assertion to be invoked.
+    inline bool HasAllBitsSet() const noexcept {
+        return IsSignedImmediate(-1);
+    }
 
-    /**
-     * Whether or not the current value contains a representation of zero.
-     *
-     * Note that this function will always return false if the contained
-     * value is not a a constant value. In other words, if IsImmediate()
-     * would return false on an instance, then so will this function.
-     */
-    bool IsZero() const;
+    /// @brief Whether or not the current value contains a representation of zero.
+    /// Note that this function will always return false if the contained
+    /// value is not a a constant value. In other words, if IsImmediate()
+    /// would return false on an instance, then so will this function.
+    inline bool IsZero() const noexcept {
+        return IsUnsignedImmediate(0);
+    }
 
 private:
     Type type;
-
     union {
         Inst* inst;  // type == Type::Opaque
         A32::Reg imm_a32regref;

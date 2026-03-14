@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2024 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,14 +8,14 @@
 
 #include "dynarmic/backend/riscv64/a32_address_space.h"
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 
 #include "dynarmic/backend/riscv64/abi.h"
 #include "dynarmic/backend/riscv64/emit_riscv64.h"
 #include "dynarmic/backend/riscv64/stack_layout.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 namespace Dynarmic::Backend::RV64 {
 
@@ -23,22 +26,9 @@ A32AddressSpace::A32AddressSpace(const A32::UserConfig& conf)
     EmitPrelude();
 }
 
-IR::Block A32AddressSpace::GenerateIR(IR::LocationDescriptor descriptor) const {
-    IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
-
-    Optimization::PolyfillPass(ir_block, {});
-    if (conf.HasOptimization(OptimizationFlag::GetSetElimination)) {
-        Optimization::A32GetSetElimination(ir_block, {.convert_nzc_to_nz = true});
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-        Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
-        Optimization::ConstantPropagation(ir_block);
-        Optimization::DeadCodeElimination(ir_block);
-    }
-    Optimization::VerificationPass(ir_block);
-
-    return ir_block;
+void A32AddressSpace::GenerateIR(IR::Block& ir_block, IR::LocationDescriptor descriptor) const {
+    A32::Translate(ir_block, A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
+    Optimization::Optimize(ir_block, conf, {});
 }
 
 CodePtr A32AddressSpace::Get(IR::LocationDescriptor descriptor) {
@@ -53,7 +43,8 @@ CodePtr A32AddressSpace::GetOrEmit(IR::LocationDescriptor descriptor) {
         return block_entry;
     }
 
-    IR::Block ir_block = GenerateIR(descriptor);
+    IR::Block ir_block{descriptor};
+    GenerateIR(ir_block, descriptor);
     const EmittedBlockInfo block_info = Emit(std::move(ir_block));
 
     block_infos.insert_or_assign(descriptor.Value(), block_info);
@@ -137,7 +128,7 @@ void A32AddressSpace::Link(EmittedBlockInfo& block_info) {
             break;
         }
         default:
-            ASSERT_FALSE("Invalid relocation target");
+            UNREACHABLE();
         }
     }
 }

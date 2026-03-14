@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,7 +8,7 @@
 
 #pragma once
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
 #include <mcl/bit/rotate.hpp>
 
@@ -36,7 +39,6 @@ struct TranslatorVisitor final {
     bool ThumbConditionPassed();
     bool VFPConditionPassed(Cond cond);
 
-    bool InterpretThisInstruction();
     bool UnpredictableInstruction();
     bool UndefinedInstruction();
     bool DecodeError();
@@ -258,7 +260,7 @@ struct TranslatorVisitor final {
     bool arm_CLZ(Cond cond, Reg d, Reg m);
     bool arm_MOVT(Cond cond, Imm<4> imm4, Reg d, Imm<12> imm12);
     bool arm_MOVW(Cond cond, Imm<4> imm4, Reg d, Imm<12> imm12);
-    bool arm_NOP() { return true; }
+    bool arm_NOP();
     bool arm_RBIT(Cond cond, Reg d, Reg m);
     bool arm_SBFX(Cond cond, Imm<5> widthm1, Reg d, Imm<5> lsb, Reg n);
     bool arm_SEL(Cond cond, Reg n, Reg d, Reg m);

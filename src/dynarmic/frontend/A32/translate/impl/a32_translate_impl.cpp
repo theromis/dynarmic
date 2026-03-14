@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,11 +8,15 @@
 
 #include "dynarmic/frontend/A32/translate/impl/a32_translate_impl.h"
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 
 #include "dynarmic/interface/A32/config.h"
 
 namespace Dynarmic::A32 {
+
+bool TranslatorVisitor::arm_NOP() {
+    return true;
+}
 
 bool TranslatorVisitor::ArmConditionPassed(Cond cond) {
     return IsConditionPassed(*this, cond);
@@ -26,11 +33,6 @@ bool TranslatorVisitor::VFPConditionPassed(Cond cond) {
         return true;
     }
     return ArmConditionPassed(cond);
-}
-
-bool TranslatorVisitor::InterpretThisInstruction() {
-    ir.SetTerm(IR::Term::Interpret(ir.current_location));
-    return false;
 }
 
 bool TranslatorVisitor::UnpredictableInstruction() {
@@ -64,7 +66,7 @@ IR::UAny TranslatorVisitor::I(size_t bitsize, u64 value) {
     case 64:
         return ir.Imm64(value);
     default:
-        ASSERT_FALSE("Imm - get: Invalid bitsize");
+        UNREACHABLE();
     }
 }
 

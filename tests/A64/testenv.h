@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,12 +8,9 @@
 
 #pragma once
 
-#include <array>
-#include <map>
-
-#include <mcl/assert.hpp>
-#include <mcl/stdint.hpp>
-
+#include <ankerl/unordered_dense.h>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/common/common_types.h"
 #include "dynarmic/interface/A64/a64.h"
 
 using Vector = Dynarmic::A64::Vector;
@@ -23,7 +23,7 @@ public:
     u64 code_mem_start_address = 0;
     std::vector<u32> code_mem;
 
-    std::map<u64, u8> modified_memory;
+    ankerl::unordered_dense::map<u64, u8> modified_memory;
     std::vector<std::string> interrupts;
 
     bool IsInCodeMem(u64 vaddr) const {
@@ -105,11 +105,13 @@ public:
         return true;
     }
 
-    void InterpreterFallback(u64 pc, size_t num_instructions) override { ASSERT_MSG(false, "InterpreterFallback({:016x}, {})", pc, num_instructions); }
+    void CallSVC(std::uint32_t swi) override {
+        UNREACHABLE(); //ASSERT(false && "CallSVC({})", swi);
+    }
 
-    void CallSVC(std::uint32_t swi) override { ASSERT_MSG(false, "CallSVC({})", swi); }
-
-    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception /*exception*/) override { ASSERT_MSG(false, "ExceptionRaised({:016x})", pc); }
+    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception /*exception*/) override {
+        UNREACHABLE(); //ASSERT(false && "ExceptionRaised({:016x})", pc);
+    }
 
     void AddTicks(std::uint64_t ticks) override {
         if (ticks > ticks_left) {
@@ -130,9 +132,9 @@ class A64FastmemTestEnv final : public Dynarmic::A64::UserCallbacks {
 public:
     u64 ticks_left = 0;
     char* backing_memory = nullptr;
+    bool ignore_invalid_insn = false;
 
-    explicit A64FastmemTestEnv(char* addr)
-            : backing_memory(addr) {}
+    explicit A64FastmemTestEnv(char* addr) : backing_memory(addr) {}
 
     template<typename T>
     T read(u64 vaddr) {
@@ -202,11 +204,13 @@ public:
         return true;
     }
 
-    void InterpreterFallback(u64 pc, size_t num_instructions) override { ASSERT_MSG(false, "InterpreterFallback({:016x}, {})", pc, num_instructions); }
+    void CallSVC(std::uint32_t swi) override {
+        UNREACHABLE(); //ASSERT(false && "CallSVC({})", swi);
+    }
 
-    void CallSVC(std::uint32_t swi) override { ASSERT_MSG(false, "CallSVC({})", swi); }
-
-    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception) override { ASSERT_MSG(false, "ExceptionRaised({:016x})", pc); }
+    void ExceptionRaised(u64 pc, Dynarmic::A64::Exception) override {
+        UNREACHABLE(); //ASSERT(false && "ExceptionRaised({:016x})", pc);
+    }
 
     void AddTicks(std::uint64_t ticks) override {
         if (ticks > ticks_left) {

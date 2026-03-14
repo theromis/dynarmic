@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -10,9 +13,9 @@
 #include <span>
 #include <utility>
 
-#include <mcl/stdint.hpp>
-#include <tsl/robin_map.h>
-#include <xbyak/xbyak.h>
+#include "dynarmic/common/common_types.h"
+#include <ankerl/unordered_dense.h>
+#include "dynarmic/backend/x64/xbyak.h"
 
 namespace Dynarmic::Backend::X64 {
 
@@ -40,10 +43,9 @@ private:
         }
     };
 
-    tsl::robin_map<ConstantT, void*, ConstantHash> constant_info;
-
-    BlockOfCode& code;
+    ankerl::unordered_dense::map<ConstantT, void*, ConstantHash> constant_info;
     std::span<ConstantT> pool;
+    BlockOfCode& code;
     std::size_t insertion_point;
 };
 

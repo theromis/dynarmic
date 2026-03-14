@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -6,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "./testenv.h"
+#include "../native/testenv.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
 
@@ -38,7 +42,7 @@ TEST_CASE("arm: Opt Failure: Const folding in MostSignificantWord", "[arm][A32]"
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 6;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     // If we don't trigger the GetCarryFromOp ASSERT, we're fine.
 }
@@ -83,7 +87,7 @@ TEST_CASE("arm: Unintended modification in SetCFlag", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 6;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 0x00000af1);
     REQUIRE(jit.Regs()[1] == 0x267ea626);
@@ -123,7 +127,7 @@ TEST_CASE("arm: shsax (Edge-case)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 0x3a3b8b18);
     REQUIRE(jit.Regs()[1] == 0x96156555);
@@ -162,7 +166,7 @@ TEST_CASE("arm: uasx (Edge-case)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[4] == 0x8ed38f4c);
     REQUIRE(jit.Regs()[5] == 0x0000261d);
@@ -200,7 +204,7 @@ TEST_CASE("arm: smuad (Edge-case)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 0x80000000);
     REQUIRE(jit.Regs()[1] == 0x80008000);
@@ -222,7 +226,7 @@ TEST_CASE("arm: Test InvalidateCacheRange", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 4;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 5);
     REQUIRE(jit.Regs()[1] == 13);
@@ -238,8 +242,8 @@ TEST_CASE("arm: Test InvalidateCacheRange", "[arm][A32]") {
     jit.Regs()[15] = 0;
 
     test_env.ticks_left = 4;
-    jit.Run();
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 5);
     REQUIRE(jit.Regs()[1] == 7);
@@ -347,7 +351,7 @@ TEST_CASE("arm: Test stepping", "[arm]") {
     }
 
     test_env.ticks_left = 20;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[15] == 80);
     REQUIRE(jit.Cpsr() == 0x000001d0);
@@ -397,7 +401,7 @@ TEST_CASE("arm: Test stepping 2", "[arm]") {
     }
 
     test_env.ticks_left = 20;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[15] == 80);
     REQUIRE(jit.Cpsr() == 0x000001d0);
@@ -427,7 +431,7 @@ TEST_CASE("arm: Test stepping 3", "[arm]") {
     REQUIRE(jit.Cpsr() == 0x000001d0);
 
     test_env.ticks_left = 20;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[15] == 20);
     REQUIRE(jit.Cpsr() == 0x000001d0);
@@ -466,7 +470,7 @@ TEST_CASE("arm: PackedAbsDiffSumS8", "[arm][A32]") {
     jit.SetCpsr(0xb0000010);
 
     test_env.ticks_left = 3;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[0] == 0xea85297c);
     REQUIRE(jit.Regs()[1] == 0x417ad918);
@@ -501,7 +505,7 @@ TEST_CASE("arm: vclt.f32 with zero", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.ExtRegs()[6] == 0x00000000);
     REQUIRE(jit.ExtRegs()[7] == 0x00000000);
@@ -521,7 +525,7 @@ TEST_CASE("arm: vcvt.s16.f64", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.ExtRegs()[16] == 0xffff8000);
     REQUIRE(jit.ExtRegs()[17] == 0xffffffff);
@@ -539,7 +543,8 @@ TEST_CASE("arm: Memory access (fastmem)", "[arm][A32]") {
     char* backing_memory = reinterpret_cast<char*>(std::align(page_size, memory_size, buffer_ptr, buffer_size_nconst));
 
     A32FastmemTestEnv env{backing_memory};
-    Dynarmic::A32::UserConfig config{&env};
+    Dynarmic::A32::UserConfig config{};
+    config.callbacks = &env;
     config.fastmem_pointer = reinterpret_cast<uintptr_t>(backing_memory);
     config.recompile_on_fastmem_failure = false;
     config.processor_id = 0;
@@ -557,7 +562,7 @@ TEST_CASE("arm: Memory access (fastmem)", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
     env.ticks_left = 3;
 
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
     REQUIRE(strncmp(backing_memory + 0x100, backing_memory + 0x1F0, 4) == 0);
 }
 
@@ -580,7 +585,7 @@ TEST_CASE("arm: vmsr, vcmp, vmrs", "[arm][A32]") {
     jit.SetCpsr(0x60000000);  // User-mode
 
     test_env.ticks_left = 4;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 }
 
 TEST_CASE("arm: sdiv maximally", "[arm][A32]") {
@@ -597,7 +602,7 @@ TEST_CASE("arm: sdiv maximally", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 2;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.Regs()[2] == 0x80000000);
 }
@@ -636,7 +641,7 @@ TEST_CASE("arm: tbl", "[arm][A32]") {
     jit.ExtRegs()[23 * 2 + 1] = 0x1F'1E'1D'1C;
 
     test_env.ticks_left = 5;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.ExtRegs()[16 * 2 + 0] == 0x05'02'01'00);
     REQUIRE(jit.ExtRegs()[16 * 2 + 1] == 0x00'00'00'00);
@@ -688,7 +693,7 @@ TEST_CASE("arm: tbx", "[arm][A32]") {
     jit.ExtRegs()[23 * 2 + 1] = 0x1F'1E'1D'1C;
 
     test_env.ticks_left = 5;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(jit.ExtRegs()[16 * 2 + 0] == 0x05'02'01'00);
     REQUIRE(jit.ExtRegs()[16 * 2 + 1] == 0x20'1F'10'0F);

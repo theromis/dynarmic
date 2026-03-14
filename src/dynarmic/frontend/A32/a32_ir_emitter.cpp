@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,7 +8,7 @@
 
 #include "dynarmic/frontend/A32/a32_ir_emitter.h"
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 
 #include "dynarmic/frontend/A32/a32_types.h"
 #include "dynarmic/interface/A32/arch_version.h"
@@ -53,15 +56,11 @@ IR::U32 IREmitter::GetRegister(Reg reg) {
 }
 
 IR::U32U64 IREmitter::GetExtendedRegister(ExtReg reg) {
-    if (A32::IsSingleExtReg(reg)) {
+    if (A32::IsSingleExtReg(reg))
         return Inst<IR::U32U64>(Opcode::A32GetExtendedRegister32, IR::Value(reg));
-    }
-
-    if (A32::IsDoubleExtReg(reg)) {
+    else if (A32::IsDoubleExtReg(reg))
         return Inst<IR::U32U64>(Opcode::A32GetExtendedRegister64, IR::Value(reg));
-    }
-
-    ASSERT_FALSE("Invalid reg.");
+    UNREACHABLE();
 }
 
 IR::U128 IREmitter::GetVector(ExtReg reg) {
@@ -80,7 +79,7 @@ void IREmitter::SetExtendedRegister(const ExtReg reg, const IR::U32U64& value) {
     } else if (A32::IsDoubleExtReg(reg)) {
         Inst(Opcode::A32SetExtendedRegister64, IR::Value(reg), value);
     } else {
-        ASSERT_FALSE("Invalid reg.");
+        UNREACHABLE();
     }
 }
 
@@ -237,7 +236,7 @@ IR::UAny IREmitter::ReadMemory(size_t bitsize, const IR::U32& vaddr, IR::AccType
     case 64:
         return ReadMemory64(vaddr, acc_type);
     }
-    ASSERT_FALSE("Invalid bitsize");
+    UNREACHABLE();
 }
 
 IR::U8 IREmitter::ReadMemory8(const IR::U32& vaddr, IR::AccType acc_type) {
@@ -295,7 +294,7 @@ void IREmitter::WriteMemory(size_t bitsize, const IR::U32& vaddr, const IR::UAny
     case 64:
         return WriteMemory64(vaddr, value, acc_type);
     }
-    ASSERT_FALSE("Invalid bitsize");
+    UNREACHABLE();
 }
 
 void IREmitter::WriteMemory8(const IR::U32& vaddr, const IR::U8& value, IR::AccType acc_type) {

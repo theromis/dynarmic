@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,8 +11,10 @@
 #include <mutex>
 
 #include <boost/icl/interval_set.hpp>
-#include <mcl/assert.hpp>
-#include <mcl/bit_cast.hpp>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/common/fp/fpcr.h"
+#include "dynarmic/common/llvm_disassemble.h"
+#include <bit>
 #include <mcl/scope_exit.hpp>
 
 #include "dynarmic/backend/x64/a64_emit_x64.h"
@@ -18,11 +23,10 @@
 #include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
 #include "dynarmic/common/atomic.h"
-#include "dynarmic/common/x64_disassemble.h"
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/ir/basic_block.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 namespace Dynarmic::A64 {
 
@@ -40,7 +44,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*Lo
 static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
     return [conf](BlockOfCode& code) {
         if (conf.page_table) {
-            code.mov(code.r14, mcl::bit_cast<u64>(conf.page_table));
+            code.mov(code.r14, std::bit_cast<u64>(conf.page_table));
         }
         if (conf.fastmem_pointer) {
             code.mov(code.r13, *conf.fastmem_pointer);
@@ -58,10 +62,11 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
 struct Jit::Impl final {
 public:
     Impl(Jit* jit, UserConfig conf)
-            : conf(conf)
-            , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
-            , emitter(block_of_code, conf, jit)
-            , polyfill_options(GenPolyfillOptions(block_of_code)) {
+        : conf(conf)
+        , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+        , emitter(block_of_code, conf, jit)
+        , polyfill_options(GenPolyfillOptions(block_of_code))
+    {
         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
     }
 
@@ -83,10 +88,9 @@ public:
             const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSBPtrMask;
             if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
                 jit_state.rsb_ptr = new_rsb_ptr;
-                return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
+                return CodePtr(jit_state.rsb_codeptrs[new_rsb_ptr]);
             }
-
-            return GetCurrentBlock();
+            return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
         }();
 
         const HaltReason hr = block_of_code.RunCode(&jit_state, current_code_ptr);
@@ -228,14 +232,10 @@ public:
         return is_executing;
     }
 
-    void DumpDisassembly() const {
+    std::string Disassemble() const {
         const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
-        Common::DumpDisassembledX64(block_of_code.GetCodeBegin(), size);
-    }
-
-    std::vector<std::string> Disassemble() const {
-        const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
-        return Common::DisassembleX64(block_of_code.GetCodeBegin(), size);
+        auto const* p = reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
+        return Common::DisassembleX64(p, p + size);
     }
 
 private:
@@ -256,8 +256,8 @@ private:
         return GetBlock(A64::LocationDescriptor{GetCurrentLocation()}.SetSingleStepping(true));
     }
 
-    CodePtr GetBlock(IR::LocationDescriptor current_location) {
-        if (auto block = emitter.GetBasicBlock(current_location))
+    CodePtr GetBlock(IR::LocationDescriptor descriptor) {
+        if (auto block = emitter.GetBasicBlock(descriptor))
             return block->entrypoint;
 
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
@@ -270,23 +270,11 @@ private:
 
         // JIT Compile
         const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
-        IR::Block ir_block = A64::Translate(A64::LocationDescriptor{current_location}, get_code,
-                                            {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
-        Optimization::PolyfillPass(ir_block, polyfill_options);
-        Optimization::A64CallbackConfigPass(ir_block, conf);
-        Optimization::NamingPass(ir_block);
-        if (conf.HasOptimization(OptimizationFlag::GetSetElimination) && !conf.check_halt_on_memory_access) {
-            Optimization::A64GetSetElimination(ir_block);
-            Optimization::DeadCodeElimination(ir_block);
-        }
-        if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-            Optimization::ConstantPropagation(ir_block);
-            Optimization::DeadCodeElimination(ir_block);
-        }
-        if (conf.HasOptimization(OptimizationFlag::MiscIROpt)) {
-            Optimization::A64MergeInterpretBlocksPass(ir_block, conf.callbacks);
-        }
-        Optimization::VerificationPass(ir_block);
+        // LocationDescriptor ctor() does important ops (like tflags) do not skip
+        auto const arch_descriptor = A64::LocationDescriptor{descriptor};
+        ir_block.Reset(arch_descriptor);
+        A64::Translate(ir_block, arch_descriptor, get_code, {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
+        Optimization::Optimize(ir_block, conf, polyfill_options);
         return emitter.Emit(ir_block).entrypoint;
     }
 
@@ -312,14 +300,13 @@ private:
         }
     }
 
-    bool is_executing = false;
-
+    IR::Block ir_block = {LocationDescriptor(0, FP::FPCR(0), false)};
     const UserConfig conf;
     A64JitState jit_state;
     BlockOfCode block_of_code;
     A64EmitX64 emitter;
     Optimization::PolyfillOptions polyfill_options;
-
+    bool is_executing = false;
     bool invalidate_entire_cache = false;
     boost::icl::interval_set<u64> invalid_cache_ranges;
     std::mutex invalidation_mutex;
@@ -438,11 +425,7 @@ bool Jit::IsExecuting() const {
     return impl->IsExecuting();
 }
 
-void Jit::DumpDisassembly() const {
-    return impl->DumpDisassembly();
-}
-
-std::vector<std::string> Jit::Disassemble() const {
+std::string Jit::Disassemble() const {
     return impl->Disassemble();
 }
 

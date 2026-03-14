@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
  */
 
-#include <mcl/bit_cast.hpp>
-#include <xbyak/xbyak.h>
+#include <bit>
+#include "dynarmic/backend/x64/xbyak.h"
 
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/a64_emit_x64.h"
@@ -46,26 +49,25 @@ void EmitDetectMisalignedVAddr(BlockOfCode& code, EmitContext& ctx, size_t bitsi
 
     code.test(vaddr, align_mask);
 
-    if (!ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary) {
+    if (ctx.conf.only_detect_misalignment_via_page_table_on_page_boundary) {
+        const u32 page_align_mask = static_cast<u32>(page_size - 1) & ~align_mask;
+
+        SharedLabel detect_boundary = GenSharedLabel(), resume = GenSharedLabel();
+
+        code.jnz(*detect_boundary, code.T_NEAR);
+        code.L(*resume);
+
+        ctx.deferred_emits.emplace_back([=, &code] {
+            code.L(*detect_boundary);
+            code.mov(tmp, vaddr);
+            code.and_(tmp, page_align_mask);
+            code.cmp(tmp, page_align_mask);
+            code.jne(*resume, code.T_NEAR);
+            // NOTE: We expect to fallthrough into abort code here.
+        });
+    } else {
         code.jnz(abort, code.T_NEAR);
-        return;
     }
-
-    const u32 page_align_mask = static_cast<u32>(page_size - 1) & ~align_mask;
-
-    SharedLabel detect_boundary = GenSharedLabel(), resume = GenSharedLabel();
-
-    code.jnz(*detect_boundary, code.T_NEAR);
-    code.L(*resume);
-
-    ctx.deferred_emits.emplace_back([=, &code] {
-        code.L(*detect_boundary);
-        code.mov(tmp, vaddr);
-        code.and_(tmp, page_align_mask);
-        code.cmp(tmp, page_align_mask);
-        code.jne(*resume, code.T_NEAR);
-        // NOTE: We expect to fallthrough into abort code here.
-    });
 }
 
 template<typename EmitContext>
@@ -73,17 +75,17 @@ Xbyak::RegExp EmitVAddrLookup(BlockOfCode& code, EmitContext& ctx, size_t bitsiz
 
 template<>
 [[maybe_unused]] Xbyak::RegExp EmitVAddrLookup<A32EmitContext>(BlockOfCode& code, A32EmitContext& ctx, size_t bitsize, Xbyak::Label& abort, Xbyak::Reg64 vaddr) {
-    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr();
-    const Xbyak::Reg32 tmp = ctx.conf.absolute_offset_page_table ? page.cvt32() : ctx.reg_alloc.ScratchGpr().cvt32();
+    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg32 tmp = ctx.conf.absolute_offset_page_table ? page.cvt32() : ctx.reg_alloc.ScratchGpr(code).cvt32();
 
     EmitDetectMisalignedVAddr(code, ctx, bitsize, abort, vaddr, tmp.cvt64());
 
     // TODO: This code assumes vaddr has been zext from 32-bits to 64-bits.
 
     code.mov(tmp, vaddr.cvt32());
-    code.shr(tmp, static_cast<int>(page_bits));
-
-    code.mov(page, qword[r14 + tmp.cvt64() * sizeof(void*)]);
+    code.shr(tmp, int(page_bits));
+    code.shl(tmp, int(ctx.conf.page_table_log2_stride));
+    code.mov(page, qword[r14 + tmp.cvt64()]);
     if (ctx.conf.page_table_pointer_mask_bits == 0) {
         code.test(page, page);
     } else {
@@ -103,8 +105,8 @@ template<>
     const size_t valid_page_index_bits = ctx.conf.page_table_address_space_bits - page_bits;
     const size_t unused_top_bits = 64 - ctx.conf.page_table_address_space_bits;
 
-    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr();
-    const Xbyak::Reg64 tmp = ctx.conf.absolute_offset_page_table ? page : ctx.reg_alloc.ScratchGpr();
+    const Xbyak::Reg64 page = ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 tmp = ctx.conf.absolute_offset_page_table ? page : ctx.reg_alloc.ScratchGpr(code);
 
     EmitDetectMisalignedVAddr(code, ctx, bitsize, abort, vaddr, tmp);
 
@@ -114,7 +116,7 @@ template<>
     } else if (ctx.conf.silently_mirror_page_table) {
         if (valid_page_index_bits >= 32) {
             if (code.HasHostFeature(HostFeature::BMI2)) {
-                const Xbyak::Reg64 bit_count = ctx.reg_alloc.ScratchGpr();
+                const Xbyak::Reg64 bit_count = ctx.reg_alloc.ScratchGpr(code);
                 code.mov(bit_count, unused_top_bits);
                 code.bzhi(tmp, vaddr, bit_count);
                 code.shr(tmp, int(page_bits));
@@ -136,7 +138,9 @@ template<>
         code.test(tmp, u32(-(1 << valid_page_index_bits)));
         code.jnz(abort, code.T_NEAR);
     }
-    code.mov(page, qword[r14 + tmp * sizeof(void*)]);
+
+    code.shl(tmp, int(ctx.conf.page_table_log2_stride));
+    code.mov(page, qword[r14 + tmp]);
     if (ctx.conf.page_table_pointer_mask_bits == 0) {
         code.test(page, page);
     } else {
@@ -161,13 +165,12 @@ template<>
 
 template<>
 [[maybe_unused]] Xbyak::RegExp EmitFastmemVAddr<A64EmitContext>(BlockOfCode& code, A64EmitContext& ctx, Xbyak::Label& abort, Xbyak::Reg64 vaddr, bool& require_abort_handling, std::optional<Xbyak::Reg64> tmp) {
-    const size_t unused_top_bits = 64 - ctx.conf.fastmem_address_space_bits;
-
+    auto const unused_top_bits = 64 - ctx.conf.fastmem_address_space_bits;
     if (unused_top_bits == 0) {
         return r13 + vaddr;
     } else if (ctx.conf.silently_mirror_fastmem) {
         if (!tmp) {
-            tmp = ctx.reg_alloc.ScratchGpr();
+            tmp = ctx.reg_alloc.ScratchGpr(code);
         }
         if (unused_top_bits < 32) {
             code.mov(*tmp, vaddr);
@@ -188,7 +191,7 @@ template<>
         } else {
             // TODO: Consider having TEST as above but coalesce 64-bit constant in register allocator
             if (!tmp) {
-                tmp = ctx.reg_alloc.ScratchGpr();
+                tmp = ctx.reg_alloc.ScratchGpr(code);
             }
             code.mov(*tmp, vaddr);
             code.shr(*tmp, int(ctx.conf.fastmem_address_space_bits));
@@ -203,7 +206,7 @@ template<std::size_t bitsize>
 const void* EmitReadMemoryMov(BlockOfCode& code, int value_idx, const Xbyak::RegExp& addr, bool ordered) {
     if (ordered) {
         if constexpr (bitsize != 128) {
-            code.xor_(Xbyak::Reg32{value_idx}, Xbyak::Reg32{value_idx});
+            code.xor_(Xbyak::Reg32(value_idx), Xbyak::Reg32(value_idx));
         } else {
             code.xor_(eax, eax);
             code.xor_(ebx, ebx);
@@ -215,59 +218,59 @@ const void* EmitReadMemoryMov(BlockOfCode& code, int value_idx, const Xbyak::Reg
         switch (bitsize) {
         case 8:
             code.lock();
-            code.xadd(code.byte[addr], Xbyak::Reg32{value_idx}.cvt8());
+            code.xadd(code.byte[addr], Xbyak::Reg32(value_idx).cvt8());
             break;
         case 16:
             code.lock();
-            code.xadd(word[addr], Xbyak::Reg16{value_idx});
+            code.xadd(word[addr], Xbyak::Reg64(value_idx).cvt16());
             break;
         case 32:
             code.lock();
-            code.xadd(dword[addr], Xbyak::Reg32{value_idx});
+            code.xadd(dword[addr], Xbyak::Reg64(value_idx).cvt32());
             break;
         case 64:
             code.lock();
-            code.xadd(qword[addr], Xbyak::Reg64{value_idx});
+            code.xadd(qword[addr], Xbyak::Reg64(value_idx));
             break;
         case 128:
             code.lock();
             code.cmpxchg16b(xword[addr]);
             if (code.HasHostFeature(HostFeature::SSE41)) {
-                code.movq(Xbyak::Xmm{value_idx}, rax);
-                code.pinsrq(Xbyak::Xmm{value_idx}, rdx, 1);
+                code.movq(Xbyak::Xmm(value_idx), rax);
+                code.pinsrq(Xbyak::Xmm(value_idx), rdx, 1);
             } else {
-                code.movq(Xbyak::Xmm{value_idx}, rax);
+                code.movq(Xbyak::Xmm(value_idx), rax);
                 code.movq(xmm0, rdx);
-                code.punpcklqdq(Xbyak::Xmm{value_idx}, xmm0);
+                code.punpcklqdq(Xbyak::Xmm(value_idx), xmm0);
             }
             break;
         default:
-            ASSERT_FALSE("Invalid bitsize");
+            UNREACHABLE();
+        }
+        return fastmem_location;
+    } else {
+        const void* fastmem_location = code.getCurr();
+        switch (bitsize) {
+        case 8:
+            code.movzx(Xbyak::Reg64(value_idx).cvt32(), code.byte[addr]);
+            break;
+        case 16:
+            code.movzx(Xbyak::Reg64(value_idx).cvt32(), word[addr]);
+            break;
+        case 32:
+            code.mov(Xbyak::Reg64(value_idx).cvt32(), dword[addr]);
+            break;
+        case 64:
+            code.mov(Xbyak::Reg64(value_idx), qword[addr]);
+            break;
+        case 128:
+            code.movups(Xbyak::Xmm(value_idx), xword[addr]);
+            break;
+        default:
+            UNREACHABLE();
         }
         return fastmem_location;
     }
-
-    const void* fastmem_location = code.getCurr();
-    switch (bitsize) {
-    case 8:
-        code.movzx(Xbyak::Reg32{value_idx}, code.byte[addr]);
-        break;
-    case 16:
-        code.movzx(Xbyak::Reg32{value_idx}, word[addr]);
-        break;
-    case 32:
-        code.mov(Xbyak::Reg32{value_idx}, dword[addr]);
-        break;
-    case 64:
-        code.mov(Xbyak::Reg64{value_idx}, qword[addr]);
-        break;
-    case 128:
-        code.movups(Xbyak::Xmm{value_idx}, xword[addr]);
-        break;
-    default:
-        ASSERT_FALSE("Invalid bitsize");
-    }
-    return fastmem_location;
 }
 
 template<std::size_t bitsize>
@@ -277,10 +280,10 @@ const void* EmitWriteMemoryMov(BlockOfCode& code, const Xbyak::RegExp& addr, int
             code.xor_(eax, eax);
             code.xor_(edx, edx);
             if (code.HasHostFeature(HostFeature::SSE41)) {
-                code.movq(rbx, Xbyak::Xmm{value_idx});
-                code.pextrq(rcx, Xbyak::Xmm{value_idx}, 1);
+                code.movq(rbx, Xbyak::Xmm(value_idx));
+                code.pextrq(rcx, Xbyak::Xmm(value_idx), 1);
             } else {
-                code.movaps(xmm0, Xbyak::Xmm{value_idx});
+                code.movaps(xmm0, Xbyak::Xmm(value_idx));
                 code.movq(rbx, xmm0);
                 code.punpckhqdq(xmm0, xmm0);
                 code.movq(rcx, xmm0);
@@ -290,52 +293,52 @@ const void* EmitWriteMemoryMov(BlockOfCode& code, const Xbyak::RegExp& addr, int
         const void* fastmem_location = code.getCurr();
         switch (bitsize) {
         case 8:
-            code.xchg(code.byte[addr], Xbyak::Reg64{value_idx}.cvt8());
+            code.xchg(code.byte[addr], Xbyak::Reg64(value_idx).cvt8());
             break;
         case 16:
-            code.xchg(word[addr], Xbyak::Reg16{value_idx});
+            code.xchg(word[addr], Xbyak::Reg64(value_idx).cvt16());
             break;
         case 32:
-            code.xchg(dword[addr], Xbyak::Reg32{value_idx});
+            code.xchg(dword[addr], Xbyak::Reg64(value_idx).cvt32());
             break;
         case 64:
-            code.xchg(qword[addr], Xbyak::Reg64{value_idx});
+            code.xchg(qword[addr], Xbyak::Reg64(value_idx));
             break;
         case 128: {
             Xbyak::Label loop;
             code.L(loop);
             code.lock();
             code.cmpxchg16b(xword[addr]);
-            code.jnz(loop);
+            code.jnz(loop, code.T_NEAR);
             break;
         }
         default:
-            ASSERT_FALSE("Invalid bitsize");
+            UNREACHABLE();
+        }
+        return fastmem_location;
+    } else {
+        const void* fastmem_location = code.getCurr();
+        switch (bitsize) {
+        case 8:
+            code.mov(code.byte[addr], Xbyak::Reg64(value_idx).cvt8());
+            break;
+        case 16:
+            code.mov(word[addr], Xbyak::Reg64(value_idx).cvt16());
+            break;
+        case 32:
+            code.mov(dword[addr], Xbyak::Reg64(value_idx).cvt32());
+            break;
+        case 64:
+            code.mov(qword[addr], Xbyak::Reg64(value_idx));
+            break;
+        case 128:
+            code.movups(xword[addr], Xbyak::Xmm(value_idx));
+            break;
+        default:
+            UNREACHABLE();
         }
         return fastmem_location;
     }
-
-    const void* fastmem_location = code.getCurr();
-    switch (bitsize) {
-    case 8:
-        code.mov(code.byte[addr], Xbyak::Reg64{value_idx}.cvt8());
-        break;
-    case 16:
-        code.mov(word[addr], Xbyak::Reg16{value_idx});
-        break;
-    case 32:
-        code.mov(dword[addr], Xbyak::Reg32{value_idx});
-        break;
-    case 64:
-        code.mov(qword[addr], Xbyak::Reg64{value_idx});
-        break;
-    case 128:
-        code.movups(xword[addr], Xbyak::Xmm{value_idx});
-        break;
-    default:
-        ASSERT_FALSE("Invalid bitsize");
-    }
-    return fastmem_location;
 }
 
 template<typename UserConfig>
@@ -344,8 +347,8 @@ void EmitExclusiveLock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 p
         return;
     }
 
-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
-    EmitSpinLockLock(code, pointer, tmp);
+    code.mov(pointer, std::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
+    EmitSpinLockLock(code, pointer, tmp, code.HasHostFeature(HostFeature::WAITPKG));
 }
 
 template<typename UserConfig>
@@ -354,7 +357,7 @@ void EmitExclusiveUnlock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64
         return;
     }
 
-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
+    code.mov(pointer, std::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
     EmitSpinLockUnlock(code, pointer, tmp);
 }
 
@@ -371,9 +374,9 @@ void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak:
             continue;
         }
         Xbyak::Label ok;
-        code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
+        code.mov(pointer, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
         code.cmp(qword[pointer], vaddr);
-        code.jne(ok);
+        code.jne(ok, code.T_NEAR);
         code.mov(qword[pointer], tmp);
         code.L(ok);
     }

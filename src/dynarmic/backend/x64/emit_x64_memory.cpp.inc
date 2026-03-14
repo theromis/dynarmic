@@ -28,27 +28,21 @@ std::optional<AxxEmitX64::DoNotFastmemMarker> AxxEmitX64::ShouldFastmem(AxxEmitC
 
 FakeCall AxxEmitX64::FastmemCallback(u64 rip_) {
     const auto iter = fastmem_patch_info.find(rip_);
-
-    if (iter == fastmem_patch_info.end()) {
-        fmt::print("dynarmic: Segfault happened within JITted code at rip = {:016x}\n", rip_);
-        fmt::print("Segfault wasn't at a fastmem patch location!\n");
-        fmt::print("Now dumping code.......\n\n");
-        Common::DumpDisassembledX64((void*)(rip_ & ~u64(0xFFF)), 0x1000);
-        ASSERT_FALSE("iter != fastmem_patch_info.end()");
+    if (iter != fastmem_patch_info.end()) {
+        FakeCall result{
+            .call_rip = iter->second.callback,
+            .ret_rip = iter->second.resume_rip,
+        };
+        if (iter->second.recompile) {
+            const auto marker = iter->second.marker;
+            do_not_fastmem.insert(marker);
+            InvalidateBasicBlocks({std::get<0>(marker)});
+        }
+        return result;
     }
-
-    FakeCall result{
-        .call_rip = iter->second.callback,
-        .ret_rip = iter->second.resume_rip,
-    };
-
-    if (iter->second.recompile) {
-        const auto marker = iter->second.marker;
-        do_not_fastmem.insert(marker);
-        InvalidateBasicBlocks({std::get<0>(marker)});
-    }
-
-    return result;
+    fmt::print("dynarmic: Segfault happened within JITted code at rip = {:016x}\n"
+        "Segfault wasn't at a fastmem patch location!\n", rip_);
+    UNREACHABLE(); //("iter != fastmem_patch_info.end()");
 }
 
 template<std::size_t bitsize, auto callback>
@@ -60,14 +54,14 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
     if (!conf.page_table && !fastmem_marker) {
         // Neither fastmem nor page table: Use callbacks
         if constexpr (bitsize == 128) {
-            ctx.reg_alloc.HostCall(nullptr, {}, args[1]);
+            ctx.reg_alloc.HostCall(code, nullptr, {}, args[1]);
             if (ordered) {
                 code.mfence();
             }
             code.CallFunction(memory_read_128);
-            ctx.reg_alloc.DefineValue(inst, xmm1);
+            ctx.reg_alloc.DefineValue(code, inst, xmm1);
         } else {
-            ctx.reg_alloc.HostCall(inst, {}, args[1]);
+            ctx.reg_alloc.HostCall(code, inst, {}, args[1]);
             if (ordered) {
                 code.mfence();
             }
@@ -80,14 +74,14 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (ordered && bitsize == 128) {
         // Required for atomic 128-bit loads/stores
-        ctx.reg_alloc.ScratchGpr(HostLoc::RAX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RBX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RCX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RDX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RBX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RCX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     }
 
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(args[1]);
-    const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm().getIdx() : ctx.reg_alloc.ScratchGpr().getIdx();
+    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm(code).getIdx() : ctx.reg_alloc.ScratchGpr(code).getIdx();
 
     const auto wrapped_fn = read_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
 
@@ -95,7 +89,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (fastmem_marker) {
         // Use fastmem
-        bool require_abort_handling;
+        bool require_abort_handling = false;
         const auto src_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
 
         const auto location = EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
@@ -105,10 +99,10 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
             code.call(wrapped_fn);
 
             fastmem_patch_info.emplace(
-                mcl::bit_cast<u64>(location),
+                std::bit_cast<u64>(location),
                 FastmemPatchInfo{
-                    mcl::bit_cast<u64>(code.getCurr()),
-                    mcl::bit_cast<u64>(wrapped_fn),
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(wrapped_fn),
                     *fastmem_marker,
                     conf.recompile_on_fastmem_failure,
                 });
@@ -132,9 +126,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
     code.L(*end);
 
     if constexpr (bitsize == 128) {
-        ctx.reg_alloc.DefineValue(inst, Xbyak::Xmm{value_idx});
+        ctx.reg_alloc.DefineValue(code, inst, Xbyak::Xmm{value_idx});
     } else {
-        ctx.reg_alloc.DefineValue(inst, Xbyak::Reg64{value_idx});
+        ctx.reg_alloc.DefineValue(code, inst, Xbyak::Reg64{value_idx});
     }
 }
 
@@ -147,13 +141,13 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
     if (!conf.page_table && !fastmem_marker) {
         // Neither fastmem nor page table: Use callbacks
         if constexpr (bitsize == 128) {
-            ctx.reg_alloc.Use(args[1], ABI_PARAM2);
-            ctx.reg_alloc.Use(args[2], HostLoc::XMM1);
+            ctx.reg_alloc.Use(code, args[1], ABI_PARAM2);
+            ctx.reg_alloc.Use(code, args[2], HostLoc::XMM1);
             ctx.reg_alloc.EndOfAllocScope();
-            ctx.reg_alloc.HostCall(nullptr);
+            ctx.reg_alloc.HostCall(code, nullptr);
             code.CallFunction(memory_write_128);
         } else {
-            ctx.reg_alloc.HostCall(nullptr, {}, args[1], args[2]);
+            ctx.reg_alloc.HostCall(code, nullptr, {}, args[1], args[2]);
             Devirtualize<callback>(conf.callbacks).EmitCall(code);
         }
         if (ordered) {
@@ -165,16 +159,16 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (ordered && bitsize == 128) {
         // Required for atomic 128-bit loads/stores
-        ctx.reg_alloc.ScratchGpr(HostLoc::RAX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RBX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RCX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RDX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RBX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RCX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     }
 
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(args[1]);
+    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
     const int value_idx = bitsize == 128
-                            ? ctx.reg_alloc.UseXmm(args[2]).getIdx()
-                            : (ordered ? ctx.reg_alloc.UseScratchGpr(args[2]).getIdx() : ctx.reg_alloc.UseGpr(args[2]).getIdx());
+                            ? ctx.reg_alloc.UseXmm(code, args[2]).getIdx()
+                            : (ordered ? ctx.reg_alloc.UseScratchGpr(code, args[2]).getIdx() : ctx.reg_alloc.UseGpr(code, args[2]).getIdx());
 
     const auto wrapped_fn = write_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
 
@@ -182,7 +176,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (fastmem_marker) {
         // Use fastmem
-        bool require_abort_handling;
+        bool require_abort_handling = false;
         const auto dest_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
 
         const auto location = EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
@@ -192,10 +186,10 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
             code.call(wrapped_fn);
 
             fastmem_patch_info.emplace(
-                mcl::bit_cast<u64>(location),
+                std::bit_cast<u64>(location),
                 FastmemPatchInfo{
-                    mcl::bit_cast<u64>(code.getCurr()),
-                    mcl::bit_cast<u64>(wrapped_fn),
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(wrapped_fn),
                     *fastmem_marker,
                     conf.recompile_on_fastmem_failure,
                 });
@@ -228,9 +222,9 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
     if constexpr (bitsize != 128) {
         using T = mcl::unsigned_integer_of_size<bitsize>;
 
-        ctx.reg_alloc.HostCall(inst, {}, args[1]);
+        ctx.reg_alloc.HostCall(code, inst, {}, args[1]);
 
-        code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+        code.mov(code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)], u8(1));
         code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
         if (ordered) {
             code.mfence();
@@ -243,14 +237,14 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
             });
         code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
     } else {
-        const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-        ctx.reg_alloc.Use(args[1], ABI_PARAM2);
+        const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+        ctx.reg_alloc.Use(code, args[1], ABI_PARAM2);
         ctx.reg_alloc.EndOfAllocScope();
-        ctx.reg_alloc.HostCall(nullptr);
+        ctx.reg_alloc.HostCall(code, nullptr);
 
-        code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+        code.mov(code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)], u8(1));
         code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
-        ctx.reg_alloc.AllocStackSpace(16 + ABI_SHADOW_SPACE);
+        ctx.reg_alloc.AllocStackSpace(code, 16 + ABI_SHADOW_SPACE);
         code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
         if (ordered) {
             code.mfence();
@@ -262,9 +256,9 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
                 });
             });
         code.movups(result, xword[rsp + ABI_SHADOW_SPACE]);
-        ctx.reg_alloc.ReleaseStackSpace(16 + ABI_SHADOW_SPACE);
+        ctx.reg_alloc.ReleaseStackSpace(code, 16 + ABI_SHADOW_SPACE);
 
-        ctx.reg_alloc.DefineValue(inst, result);
+        ctx.reg_alloc.DefineValue(code, inst, result);
     }
 
     EmitCheckMemoryAbort(ctx, inst);
@@ -276,54 +270,47 @@ void AxxEmitX64::EmitExclusiveWriteMemory(AxxEmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
 
-    if constexpr (bitsize != 128) {
-        ctx.reg_alloc.HostCall(inst, {}, args[1], args[2]);
-    } else {
-        ctx.reg_alloc.Use(args[1], ABI_PARAM2);
-        ctx.reg_alloc.Use(args[2], HostLoc::XMM1);
+    if constexpr (bitsize == 128) {
+        ctx.reg_alloc.Use(code, args[1], ABI_PARAM2);
+        ctx.reg_alloc.Use(code, args[2], HostLoc::XMM1);
         ctx.reg_alloc.EndOfAllocScope();
-        ctx.reg_alloc.HostCall(inst);
+        ctx.reg_alloc.HostCall(code, inst);
+    } else {
+        ctx.reg_alloc.HostCall(code, inst, {}, args[1], args[2]);
     }
 
+    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
     Xbyak::Label end;
-
     code.mov(code.ABI_RETURN, u32(1));
-    code.cmp(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+    code.movzx(tmp.cvt32(), code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)]);
+    code.test(tmp.cvt8(), tmp.cvt8());
     code.je(end);
-    code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
-    code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
+    code.xor_(tmp.cvt32(), tmp.cvt32());
+    code.xchg(tmp.cvt8(), code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)]);
+    code.mov(code.ABI_PARAM1, u64(&conf));
     if constexpr (bitsize != 128) {
         using T = mcl::unsigned_integer_of_size<bitsize>;
-
-        code.CallLambda(
-            [](AxxUserConfig& conf, Axx::VAddr vaddr, T value) -> u32 {
-                return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr,
-                                                                    [&](T expected) -> bool {
-                                                                        return (conf.callbacks->*callback)(vaddr, value, expected);
-                                                                    })
-                         ? 0
-                         : 1;
-            });
+        code.CallLambda([](AxxUserConfig& conf, Axx::VAddr vaddr, T value) -> u32 {
+            return conf.global_monitor->DoExclusiveOperation<T>(conf.processor_id, vaddr, [&](T expected) -> bool {
+                return (conf.callbacks->*callback)(vaddr, value, expected);
+            }) ? 0 : 1;
+        });
         if (ordered) {
             code.mfence();
         }
     } else {
-        ctx.reg_alloc.AllocStackSpace(16 + ABI_SHADOW_SPACE);
+        ctx.reg_alloc.AllocStackSpace(code, 16 + ABI_SHADOW_SPACE);
         code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
         code.movaps(xword[code.ABI_PARAM3], xmm1);
-        code.CallLambda(
-            [](AxxUserConfig& conf, Axx::VAddr vaddr, Vector& value) -> u32 {
-                return conf.global_monitor->DoExclusiveOperation<Vector>(conf.processor_id, vaddr,
-                                                                         [&](Vector expected) -> bool {
-                                                                             return (conf.callbacks->*callback)(vaddr, value, expected);
-                                                                         })
-                         ? 0
-                         : 1;
-            });
+        code.CallLambda([](AxxUserConfig& conf, Axx::VAddr vaddr, Vector& value) -> u32 {
+            return conf.global_monitor->DoExclusiveOperation<Vector>(conf.processor_id, vaddr, [&](Vector expected) -> bool {
+                return (conf.callbacks->*callback)(vaddr, value, expected);
+            }) ? 0 : 1;
+        });
         if (ordered) {
             code.mfence();
         }
-        ctx.reg_alloc.ReleaseStackSpace(16 + ABI_SHADOW_SPACE);
+        ctx.reg_alloc.ReleaseStackSpace(code, 16 + ABI_SHADOW_SPACE);
     }
     code.L(end);
 
@@ -343,23 +330,23 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
 
     if constexpr (ordered && bitsize == 128) {
         // Required for atomic 128-bit loads/stores
-        ctx.reg_alloc.ScratchGpr(HostLoc::RAX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RBX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RCX);
-        ctx.reg_alloc.ScratchGpr(HostLoc::RDX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RBX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RCX);
+        ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     }
 
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(args[1]);
-    const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm().getIdx() : ctx.reg_alloc.ScratchGpr().getIdx();
-    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr();
-    const Xbyak::Reg64 tmp2 = ctx.reg_alloc.ScratchGpr();
+    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm(code).getIdx() : ctx.reg_alloc.ScratchGpr(code).getIdx();
+    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 tmp2 = ctx.reg_alloc.ScratchGpr(code);
 
     const auto wrapped_fn = read_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
 
     EmitExclusiveLock(code, conf, tmp, tmp2.cvt32());
 
-    code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
+    code.mov(code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)], u8(1));
+    code.mov(tmp, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
     code.mov(qword[tmp], vaddr);
 
     const auto fastmem_marker = ShouldFastmem(ctx, inst);
@@ -372,10 +359,10 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
         const auto location = EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
         fastmem_patch_info.emplace(
-            mcl::bit_cast<u64>(location),
+            std::bit_cast<u64>(location),
             FastmemPatchInfo{
-                mcl::bit_cast<u64>(code.getCurr()),
-                mcl::bit_cast<u64>(wrapped_fn),
+                std::bit_cast<u64>(code.getCurr()),
+                std::bit_cast<u64>(wrapped_fn),
                 *fastmem_marker,
                 conf.recompile_on_exclusive_fastmem_failure,
             });
@@ -393,15 +380,15 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
         code.call(wrapped_fn);
     }
 
-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
+    code.mov(tmp, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
     EmitWriteMemoryMov<bitsize>(code, tmp, value_idx, false);
 
     EmitExclusiveUnlock(code, conf, tmp, tmp2.cvt32());
 
     if constexpr (bitsize == 128) {
-        ctx.reg_alloc.DefineValue(inst, Xbyak::Xmm{value_idx});
+        ctx.reg_alloc.DefineValue(code, inst, Xbyak::Xmm{value_idx});
     } else {
-        ctx.reg_alloc.DefineValue(inst, Xbyak::Reg64{value_idx});
+        ctx.reg_alloc.DefineValue(code, inst, Xbyak::Reg64{value_idx});
     }
 
     EmitCheckMemoryAbort(ctx, inst);
@@ -420,37 +407,39 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
 
     const auto value = [&] {
         if constexpr (bitsize == 128) {
-            ctx.reg_alloc.ScratchGpr(HostLoc::RAX);
-            ctx.reg_alloc.ScratchGpr(HostLoc::RBX);
-            ctx.reg_alloc.ScratchGpr(HostLoc::RCX);
-            ctx.reg_alloc.ScratchGpr(HostLoc::RDX);
-            return ctx.reg_alloc.UseXmm(args[2]);
+            ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
+            ctx.reg_alloc.ScratchGpr(code, HostLoc::RBX);
+            ctx.reg_alloc.ScratchGpr(code, HostLoc::RCX);
+            ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
+            return ctx.reg_alloc.UseXmm(code, args[2]);
         } else {
-            ctx.reg_alloc.ScratchGpr(HostLoc::RAX);
-            return ctx.reg_alloc.UseGpr(args[2]);
+            ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
+            return ctx.reg_alloc.UseGpr(code, args[2]);
         }
     }();
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(args[1]);
-    const Xbyak::Reg32 status = ctx.reg_alloc.ScratchGpr().cvt32();
-    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr();
+    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    const Xbyak::Reg32 status = ctx.reg_alloc.ScratchGpr(code).cvt32();
+    const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
+    const Xbyak::Reg64 tmp2 = ctx.reg_alloc.ScratchGpr(code);
 
     const auto wrapped_fn = exclusive_write_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value.getIdx())];
 
-    EmitExclusiveLock(code, conf, tmp, eax);
+    EmitExclusiveLock(code, conf, tmp, tmp2.cvt32());
 
     SharedLabel end = GenSharedLabel();
 
-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
     code.mov(status, u32(1));
-    code.cmp(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+    code.movzx(tmp.cvt32(), code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)]);
+    code.test(tmp.cvt8(), tmp.cvt8());
     code.je(*end, code.T_NEAR);
+    code.mov(tmp, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
     code.cmp(qword[tmp], vaddr);
     code.jne(*end, code.T_NEAR);
 
     EmitExclusiveTestAndClear(code, conf, vaddr, tmp, rax);
 
-    code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
+    code.mov(code.byte[code.ABI_JIT_PTR + offsetof(AxxJitState, exclusive_state)], u8(0));
+    code.mov(tmp, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
 
     if constexpr (bitsize == 128) {
         code.mov(rax, qword[tmp + 0]);
@@ -477,65 +466,60 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
 
         const auto location = code.getCurr();
 
-        if constexpr (bitsize == 128) {
+        switch (bitsize) {
+        case 8:
+            code.lock();
+            code.cmpxchg(code.byte[dest_ptr], value.cvt8());
+            break;
+        case 16:
+            code.lock();
+            code.cmpxchg(word[dest_ptr], value.cvt16());
+            break;
+        case 32:
+            code.lock();
+            code.cmpxchg(dword[dest_ptr], value.cvt32());
+            break;
+        case 64:
+            code.lock();
+            code.cmpxchg(qword[dest_ptr], value.cvt64());
+            break;
+        case 128:
             code.lock();
             code.cmpxchg16b(ptr[dest_ptr]);
-        } else {
-            switch (bitsize) {
-            case 8:
-                code.lock();
-                code.cmpxchg(code.byte[dest_ptr], value.cvt8());
-                break;
-            case 16:
-                code.lock();
-                code.cmpxchg(word[dest_ptr], value.cvt16());
-                break;
-            case 32:
-                code.lock();
-                code.cmpxchg(dword[dest_ptr], value.cvt32());
-                break;
-            case 64:
-                code.lock();
-                code.cmpxchg(qword[dest_ptr], value.cvt64());
-                break;
-            default:
-                UNREACHABLE();
-            }
+            break;
+        default:
+            UNREACHABLE();
         }
 
         code.setnz(status.cvt8());
-
         ctx.deferred_emits.emplace_back([=, this] {
             code.L(*abort);
             code.call(wrapped_fn);
 
             fastmem_patch_info.emplace(
-                mcl::bit_cast<u64>(location),
+                std::bit_cast<u64>(location),
                 FastmemPatchInfo{
-                    mcl::bit_cast<u64>(code.getCurr()),
-                    mcl::bit_cast<u64>(wrapped_fn),
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(wrapped_fn),
                     *fastmem_marker,
                     conf.recompile_on_exclusive_fastmem_failure,
                 });
 
-            code.cmp(al, 0);
+            code.xor_(status.cvt32(), status.cvt32()); //dep-break
+            code.test(code.al, code.al);
             code.setz(status.cvt8());
-            code.movzx(status.cvt32(), status.cvt8());
             code.jmp(*end, code.T_NEAR);
         });
     } else {
         code.call(wrapped_fn);
-        code.cmp(al, 0);
+        code.xor_(status.cvt32(), status.cvt32()); //dep-break
+        code.test(code.al, code.al);
         code.setz(status.cvt8());
-        code.movzx(status.cvt32(), status.cvt8());
     }
 
     code.L(*end);
-
     EmitExclusiveUnlock(code, conf, tmp, eax);
-
-    ctx.reg_alloc.DefineValue(inst, status);
-
+    ctx.reg_alloc.DefineValue(code, inst, status);
     EmitCheckMemoryAbort(ctx, inst);
 }
 

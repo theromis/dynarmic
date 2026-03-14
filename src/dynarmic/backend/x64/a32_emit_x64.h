@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -10,11 +13,12 @@
 #include <set>
 #include <tuple>
 
-#include <tsl/robin_map.h>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/block_range_information.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
 #include "dynarmic/backend/x64/emit_x64.h"
+#include "dynarmic/backend/x64/reg_alloc.h"
 #include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
@@ -54,11 +58,7 @@ public:
 
     void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
 
-protected:
-    const A32::UserConfig conf;
-    A32::Jit* jit_interface;
-    BlockRangeInformation<u32> block_ranges;
-
+//protected:
     void EmitCondPrelude(const A32EmitContext& ctx);
 
     struct FastDispatchEntry {
@@ -68,20 +68,8 @@ protected:
     static_assert(sizeof(FastDispatchEntry) == 0x10);
     static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
     static constexpr size_t fast_dispatch_table_size = 0x10000;
-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
     void ClearFastDispatchTable();
-
-    void (*memory_read_128)() = nullptr;   // Dummy
-    void (*memory_write_128)() = nullptr;  // Dummy
-
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
-    std::map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
     void GenFastmemFallbacks();
-
-    const void* terminal_handler_pop_rsb_hint;
-    const void* terminal_handler_fast_dispatch_hint = nullptr;
-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
     void GenTerminalHandlers();
 
     // Microinstruction emitters
@@ -104,8 +92,6 @@ protected:
         DoNotFastmemMarker marker;
         bool recompile;
     };
-    tsl::robin_map<u64, FastmemPatchInfo> fastmem_patch_info;
-    std::set<DoNotFastmemMarker> do_not_fastmem;
     std::optional<DoNotFastmemMarker> ShouldFastmem(A32EmitContext& ctx, IR::Inst* inst) const;
     FakeCall FastmemCallback(u64 rip);
 
@@ -126,15 +112,7 @@ protected:
 
     // Terminal instruction emitters
     void EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_location, IR::LocationDescriptor old_location);
-    void EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::ReturnToDispatch terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::PopRSBHint terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::FastDispatchHint terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::If terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
-    void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
+    void EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept override;
 
     // Patching
     void Unpatch(const IR::LocationDescriptor& target_desc) override;
@@ -142,6 +120,22 @@ protected:
     void EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) override;
+
+    const A32::UserConfig conf;
+    RegAlloc reg_alloc; //reusable reg alloc
+    BlockRangeInformation<u32> block_ranges;
+    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
+    ankerl::unordered_dense::map<u64, FastmemPatchInfo> fastmem_patch_info;
+    ankerl::unordered_dense::map<std::tuple<bool, size_t, int, int>, void (*)()> read_fallbacks;
+    ankerl::unordered_dense::map<std::tuple<bool, size_t, int, int>, void (*)()> write_fallbacks;
+    ankerl::unordered_dense::map<std::tuple<bool, size_t, int, int>, void (*)()> exclusive_write_fallbacks;
+    ankerl::unordered_dense::set<DoNotFastmemMarker> do_not_fastmem;
+    void (*memory_read_128)() = nullptr;   // Dummy
+    void (*memory_write_128)() = nullptr;  // Dummy
+    const void* terminal_handler_pop_rsb_hint;
+    const void* terminal_handler_fast_dispatch_hint = nullptr;
+    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
+    A32::Jit* jit_interface;
 };
 
 }  // namespace Dynarmic::Backend::X64

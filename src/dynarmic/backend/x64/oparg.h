@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,8 +8,8 @@
 
 #pragma once
 
-#include <mcl/assert.hpp>
-#include <xbyak/xbyak.h>
+#include "dynarmic/common/assert.h"
+#include "dynarmic/backend/x64/xbyak.h"
 
 namespace Dynarmic::Backend::X64 {
 
@@ -51,9 +54,6 @@ struct OpArg {
                 return;
             case 64:
                 inner_reg = inner_reg.cvt64();
-                return;
-            default:
-                ASSERT_MSG(false, "Invalid bits");
                 return;
             }
         }

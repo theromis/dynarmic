@@ -1,9 +1,12 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2020 MerryMage
  * SPDX-License-Identifier: 0BSD
  */
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_count.hpp>
 #include <mcl/bit/bit_field.hpp>
 
@@ -16,7 +19,7 @@ enum class Accumulating {
     Accumulate
 };
 
-enum class Rounding {
+enum class RoundingATRS {
     None,
     Round,
 };
@@ -32,7 +35,7 @@ enum class Signedness {
     Unsigned
 };
 
-IR::U128 PerformRoundingCorrection(TranslatorVisitor& v, size_t esize, u64 round_value, IR::U128 original, IR::U128 shifted) {
+IR::U128 PerformRoundingATRSCorrection(TranslatorVisitor& v, size_t esize, u64 round_value, IR::U128 original, IR::U128 shifted) {
     const auto round_const = v.ir.VectorBroadcast(esize, v.I(esize, round_value));
     const auto round_correction = v.ir.VectorEqual(esize, v.ir.VectorAnd(original, round_const), round_const);
     return v.ir.VectorSub(esize, shifted, round_correction);
@@ -58,7 +61,7 @@ std::pair<size_t, size_t> ElementSizeAndShiftAmount(bool right_shift, bool L, si
     }
 }
 
-bool ShiftRight(TranslatorVisitor& v, bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm, Accumulating accumulate, Rounding rounding) {
+bool ShiftRight(TranslatorVisitor& v, bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm, Accumulating accumulate, RoundingATRS RoundingATRS) {
     if (!L && mcl::bit::get_bits<3, 5>(imm6) == 0) {
         return v.DecodeError();
     }
@@ -75,9 +78,9 @@ bool ShiftRight(TranslatorVisitor& v, bool U, bool D, size_t imm6, size_t Vd, bo
     auto result = U ? v.ir.VectorLogicalShiftRight(esize, reg_m, static_cast<u8>(shift_amount))
                     : v.ir.VectorArithmeticShiftRight(esize, reg_m, static_cast<u8>(shift_amount));
 
-    if (rounding == Rounding::Round) {
+    if (RoundingATRS == RoundingATRS::Round) {
         const u64 round_value = 1ULL << (shift_amount - 1);
-        result = PerformRoundingCorrection(v, esize, round_value, reg_m, result);
+        result = PerformRoundingATRSCorrection(v, esize, round_value, reg_m, result);
     }
 
     if (accumulate == Accumulating::Accumulate) {
@@ -89,7 +92,7 @@ bool ShiftRight(TranslatorVisitor& v, bool U, bool D, size_t imm6, size_t Vd, bo
     return true;
 }
 
-bool ShiftRightNarrowing(TranslatorVisitor& v, bool D, size_t imm6, size_t Vd, bool M, size_t Vm, Rounding rounding, Narrowing narrowing, Signedness signedness) {
+bool ShiftRightNarrowing(TranslatorVisitor& v, bool D, size_t imm6, size_t Vd, bool M, size_t Vm, RoundingATRS RoundingATRS, Narrowing narrowing, Signedness signedness) {
     if (mcl::bit::get_bits<3, 5>(imm6) == 0) {
         return v.DecodeError();
     }
@@ -113,9 +116,9 @@ bool ShiftRightNarrowing(TranslatorVisitor& v, bool D, size_t imm6, size_t Vd, b
         return v.ir.VectorLogicalShiftRight(source_esize, reg_m, shift_amount);
     }();
 
-    if (rounding == Rounding::Round) {
+    if (RoundingATRS == RoundingATRS::Round) {
         const u64 round_value = 1ULL << (shift_amount - 1);
-        wide_result = PerformRoundingCorrection(v, source_esize, round_value, reg_m, wide_result);
+        wide_result = PerformRoundingATRSCorrection(v, source_esize, round_value, reg_m, wide_result);
     }
 
     const auto result = [&] {
@@ -141,22 +144,22 @@ bool ShiftRightNarrowing(TranslatorVisitor& v, bool D, size_t imm6, size_t Vd, b
 
 bool TranslatorVisitor::asimd_SHR(bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm) {
     return ShiftRight(*this, U, D, imm6, Vd, L, Q, M, Vm,
-                      Accumulating::None, Rounding::None);
+                      Accumulating::None, RoundingATRS::None);
 }
 
 bool TranslatorVisitor::asimd_SRA(bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm) {
     return ShiftRight(*this, U, D, imm6, Vd, L, Q, M, Vm,
-                      Accumulating::Accumulate, Rounding::None);
+                      Accumulating::Accumulate, RoundingATRS::None);
 }
 
 bool TranslatorVisitor::asimd_VRSHR(bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm) {
     return ShiftRight(*this, U, D, imm6, Vd, L, Q, M, Vm,
-                      Accumulating::None, Rounding::Round);
+                      Accumulating::None, RoundingATRS::Round);
 }
 
 bool TranslatorVisitor::asimd_VRSRA(bool U, bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm) {
     return ShiftRight(*this, U, D, imm6, Vd, L, Q, M, Vm,
-                      Accumulating::Accumulate, Rounding::Round);
+                      Accumulating::Accumulate, RoundingATRS::Round);
 }
 
 bool TranslatorVisitor::asimd_VSRI(bool D, size_t imm6, size_t Vd, bool L, bool Q, bool M, size_t Vm) {
@@ -271,32 +274,32 @@ bool TranslatorVisitor::asimd_VSHL(bool D, size_t imm6, size_t Vd, bool L, bool 
 
 bool TranslatorVisitor::asimd_VSHRN(bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::None, Narrowing::Truncation, Signedness::Unsigned);
+                               RoundingATRS::None, Narrowing::Truncation, Signedness::Unsigned);
 }
 
 bool TranslatorVisitor::asimd_VRSHRN(bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::Round, Narrowing::Truncation, Signedness::Unsigned);
+                               RoundingATRS::Round, Narrowing::Truncation, Signedness::Unsigned);
 }
 
 bool TranslatorVisitor::asimd_VQRSHRUN(bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::Round, Narrowing::SaturateToUnsigned, Signedness::Signed);
+                               RoundingATRS::Round, Narrowing::SaturateToUnsigned, Signedness::Signed);
 }
 
 bool TranslatorVisitor::asimd_VQSHRUN(bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::None, Narrowing::SaturateToUnsigned, Signedness::Signed);
+                               RoundingATRS::None, Narrowing::SaturateToUnsigned, Signedness::Signed);
 }
 
 bool TranslatorVisitor::asimd_VQSHRN(bool U, bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::None, U ? Narrowing::SaturateToUnsigned : Narrowing::SaturateToSigned, U ? Signedness::Unsigned : Signedness::Signed);
+                               RoundingATRS::None, U ? Narrowing::SaturateToUnsigned : Narrowing::SaturateToSigned, U ? Signedness::Unsigned : Signedness::Signed);
 }
 
 bool TranslatorVisitor::asimd_VQRSHRN(bool U, bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {
     return ShiftRightNarrowing(*this, D, imm6, Vd, M, Vm,
-                               Rounding::Round, U ? Narrowing::SaturateToUnsigned : Narrowing::SaturateToSigned, U ? Signedness::Unsigned : Signedness::Signed);
+                               RoundingATRS::Round, U ? Narrowing::SaturateToUnsigned : Narrowing::SaturateToSigned, U ? Signedness::Unsigned : Signedness::Signed);
 }
 
 bool TranslatorVisitor::asimd_VSHLL(bool U, bool D, size_t imm6, size_t Vd, bool M, size_t Vm) {

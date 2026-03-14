@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -7,7 +10,7 @@
 
 #include <type_traits>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
 
 #include "../A32/testenv.h"
@@ -15,7 +18,7 @@
 #define CHECKED(expr)                                                                                    \
     do {                                                                                                 \
         if (auto cerr_ = (expr)) {                                                                       \
-            ASSERT_MSG(false, "Call " #expr " failed with error: {} ({})\n", static_cast<size_t>(cerr_), \
+            ASSERT(false && "Call " #expr " failed with error: {} ({})\n", static_cast<size_t>(cerr_), \
                        uc_strerror(cerr_));                                                              \
         }                                                                                                \
     } while (0)

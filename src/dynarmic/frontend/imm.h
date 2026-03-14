@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2018 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -7,10 +10,10 @@
 
 #include <type_traits>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
 #include <mcl/bitsizeof.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/common/math_util.h"
 
@@ -27,7 +30,7 @@ public:
 
     explicit Imm(u32 value)
             : value(value) {
-        ASSERT_MSG((mcl::bit::get_bits<0, bit_size - 1>(value) == value), "More bits in value than expected");
+        ASSERT((mcl::bit::get_bits<0, bit_size - 1>(value) == value) && "More bits in value than expected");
     }
 
     template<typename T = u32>

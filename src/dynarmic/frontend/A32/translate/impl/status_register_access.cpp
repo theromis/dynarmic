@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -12,7 +15,7 @@ namespace Dynarmic::A32 {
 // CPS<effect> <iflags>{, #<mode>}
 // CPS #<mode>
 bool TranslatorVisitor::arm_CPS() {
-    return InterpretThisInstruction();
+    UNREACHABLE();
 }
 
 // MRS<c> <Rd>, <spec_reg>
@@ -31,7 +34,7 @@ bool TranslatorVisitor::arm_MRS(Cond cond, Reg d) {
 
 // MSR<c> <spec_reg>, #<const>
 bool TranslatorVisitor::arm_MSR_imm(Cond cond, unsigned mask, int rotate, Imm<8> imm8) {
-    ASSERT_MSG(mask != 0, "Decode error");
+    ASSERT(mask != 0 && "Decode error");
 
     if (!ArmConditionPassed(cond)) {
         return true;
@@ -104,7 +107,7 @@ bool TranslatorVisitor::arm_MSR_reg(Cond cond, unsigned mask, Reg n) {
 
 // RFE{<amode>} <Rn>{!}
 bool TranslatorVisitor::arm_RFE() {
-    return InterpretThisInstruction();
+    UNREACHABLE();
 }
 
 // SETEND <endian_specifier>
@@ -115,7 +118,7 @@ bool TranslatorVisitor::arm_SETEND(bool E) {
 
 // SRS{<amode>} SP{!}, #<mode>
 bool TranslatorVisitor::arm_SRS() {
-    return InterpretThisInstruction();
+    UNREACHABLE();
 }
 
 }  // namespace Dynarmic::A32

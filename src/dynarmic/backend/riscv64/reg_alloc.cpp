@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2024 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,9 +11,9 @@
 #include <algorithm>
 #include <array>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/mp/metavalue/lift_value.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/common/always_false.h"
 
@@ -102,7 +105,7 @@ RegAlloc::ArgumentInfo RegAlloc::GetArgumentInfo(IR::Inst* inst) {
         const IR::Value arg = inst->GetArg(i);
         ret[i].value = arg;
         if (!arg.IsImmediate() && !IsValuelessType(arg.GetType())) {
-            ASSERT_MSG(ValueLocation(arg.GetInst()), "argument must already been defined");
+            ASSERT(ValueLocation(arg.GetInst()) && "argument must already been defined");
             ValueInfo(arg.GetInst()).uses_this_inst++;
         }
     }
@@ -190,8 +193,7 @@ u32 RegAlloc::RealizeReadImpl(const IR::Value& value) {
 
         switch (current_location->kind) {
         case HostLoc::Kind::Gpr:
-            ASSERT_FALSE("Logic error");
-            break;
+            UNREACHABLE(); //logic error
         case HostLoc::Kind::Fpr:
             as.FMV_X_D(biscuit::GPR(new_location_index), biscuit::FPR{current_location->index});
             // ASSERT size fits
@@ -213,8 +215,7 @@ u32 RegAlloc::RealizeReadImpl(const IR::Value& value) {
             as.FMV_D_X(biscuit::FPR{new_location_index}, biscuit::GPR(current_location->index));
             break;
         case HostLoc::Kind::Fpr:
-            ASSERT_FALSE("Logic error");
-            break;
+            UNREACHABLE(); //logic error
         case HostLoc::Kind::Spill:
             as.FLD(biscuit::FPR{new_location_index}, spill_offset + current_location->index * spill_slot_size, biscuit::sp);
             break;
@@ -269,10 +270,9 @@ u32 RegAlloc::AllocateRegister(const std::array<HostLocInfo, 32>& regs, const st
     std::vector<u32> candidates;
     std::copy_if(order.begin(), order.end(), std::back_inserter(candidates), [&](u32 i) { return !regs[i].locked; });
 
-    // TODO: The candidate was chosen randomly before, and a LRU was
-    // suggested as an improvement. However, using an incrementing index
-    // seems to be close enough. Determine if an LRU is still needed.
-    return candidates[alloc_candidate_index++ % candidates.size()];
+    // TODO: LRU
+    std::uniform_int_distribution<size_t> dis{0, candidates.size() - 1};
+    return candidates[dis(rand_gen)];
 }
 
 void RegAlloc::SpillGpr(u32 index) {
@@ -297,7 +297,7 @@ void RegAlloc::SpillFpr(u32 index) {
 
 u32 RegAlloc::FindFreeSpill() const {
     const auto iter = std::find_if(spills.begin(), spills.end(), [](const HostLocInfo& info) { return info.values.empty(); });
-    ASSERT_MSG(iter != spills.end(), "All spill locations are full");
+    ASSERT(iter != spills.end() && "All spill locations are full");
     return static_cast<u32>(iter - spills.begin());
 }
 
@@ -305,14 +305,11 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
     const auto contains_value = [value](const HostLocInfo& info) {
         return info.Contains(value);
     };
-
     if (const auto iter = std::find_if(gprs.begin(), gprs.end(), contains_value); iter != gprs.end()) {
         return HostLoc{HostLoc::Kind::Gpr, static_cast<u32>(iter - gprs.begin())};
-    }
-    if (const auto iter = std::find_if(fprs.begin(), fprs.end(), contains_value); iter != fprs.end()) {
+    } else if (const auto iter = std::find_if(fprs.begin(), fprs.end(), contains_value); iter != fprs.end()) {
         return HostLoc{HostLoc::Kind::Fpr, static_cast<u32>(iter - fprs.begin())};
-    }
-    if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != spills.end()) {
+    } else if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != spills.end()) {
         return HostLoc{HostLoc::Kind::Spill, static_cast<u32>(iter - spills.begin())};
     }
     return std::nullopt;
@@ -321,30 +318,27 @@ std::optional<HostLoc> RegAlloc::ValueLocation(const IR::Inst* value) const {
 HostLocInfo& RegAlloc::ValueInfo(HostLoc host_loc) {
     switch (host_loc.kind) {
     case HostLoc::Kind::Gpr:
-        return gprs[static_cast<size_t>(host_loc.index)];
+        return gprs[size_t(host_loc.index)];
     case HostLoc::Kind::Fpr:
-        return fprs[static_cast<size_t>(host_loc.index)];
+        return fprs[size_t(host_loc.index)];
     case HostLoc::Kind::Spill:
-        return spills[static_cast<size_t>(host_loc.index)];
+        return spills[size_t(host_loc.index)];
     }
-    ASSERT_FALSE("RegAlloc::ValueInfo: Invalid HostLoc::Kind");
+    UNREACHABLE();
 }
 
 HostLocInfo& RegAlloc::ValueInfo(const IR::Inst* value) {
     const auto contains_value = [value](const HostLocInfo& info) {
         return info.Contains(value);
     };
-
     if (const auto iter = std::find_if(gprs.begin(), gprs.end(), contains_value); iter != gprs.end()) {
         return *iter;
-    }
-    if (const auto iter = std::find_if(fprs.begin(), fprs.end(), contains_value); iter != gprs.end()) {
+    } else if (const auto iter = std::find_if(fprs.begin(), fprs.end(), contains_value); iter != gprs.end()) {
+        return *iter;
+    } else if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != gprs.end()) {
         return *iter;
     }
-    if (const auto iter = std::find_if(spills.begin(), spills.end(), contains_value); iter != gprs.end()) {
-        return *iter;
-    }
-    ASSERT_FALSE("RegAlloc::ValueInfo: Value not found");
+    UNREACHABLE();
 }
 
 }  // namespace Dynarmic::Backend::RV64

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -14,10 +17,9 @@
 #include <vector>
 
 #include <mcl/bitsizeof.hpp>
-#include <tsl/robin_map.h>
-#include <tsl/robin_set.h>
-#include <xbyak/xbyak.h>
-#include <xbyak/xbyak_util.h>
+#include <ankerl/unordered_dense.h>
+#include "dynarmic/backend/x64/xbyak.h"
+#include <boost/container/small_vector.hpp>
 
 #include "dynarmic/backend/exception_handler.h"
 #include "dynarmic/backend/x64/reg_alloc.h"
@@ -36,6 +38,7 @@ enum class OptimizationFlag : u32;
 
 namespace Dynarmic::Backend::X64 {
 
+class A64EmitX64;
 class BlockOfCode;
 
 using A64FullVectorWidth = std::integral_constant<size_t, 128>;
@@ -52,11 +55,7 @@ using HalfVectorArray = std::array<T, A64FullVectorWidth::value / mcl::bitsizeof
 struct EmitContext {
     EmitContext(RegAlloc& reg_alloc, IR::Block& block);
     virtual ~EmitContext();
-
-    void EraseInstruction(IR::Inst* inst);
-
     virtual FP::FPCR FPCR(bool fpcr_controlled = true) const = 0;
-
     virtual bool HasOptimization(OptimizationFlag flag) const = 0;
 
     RegAlloc& reg_alloc;
@@ -77,6 +76,7 @@ public:
         CodePtr entrypoint;  // Entrypoint of emitted code
         size_t size;         // Length in bytes of emitted code
     };
+    static_assert(sizeof(BlockDescriptor) == 16);
 
     explicit EmitX64(BlockOfCode& code);
     virtual ~EmitX64();
@@ -88,9 +88,9 @@ public:
     virtual void ClearCache();
 
     /// Invalidates a selection of basic blocks.
-    void InvalidateBasicBlocks(const tsl::robin_set<IR::LocationDescriptor>& locations);
+    void InvalidateBasicBlocks(const ankerl::unordered_dense::set<IR::LocationDescriptor>& locations);
 
-protected:
+//protected:
     // Microinstruction emitters
 #define OPCODE(name, type, ...) void Emit##name(EmitContext& ctx, IR::Inst* inst);
 #define A32OPC(...)
@@ -99,6 +99,7 @@ protected:
 #undef OPCODE
 #undef A32OPC
 #undef A64OPC
+    void EmitInvalid(EmitContext& ctx, IR::Inst* inst);
 
     // Helpers
     virtual std::string LocationDescriptorToFriendlyName(const IR::LocationDescriptor&) const = 0;
@@ -107,26 +108,17 @@ protected:
     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
     void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
 
+#ifndef NDEBUG
     void EmitVerboseDebuggingOutput(RegAlloc& reg_alloc);
-
-    // Terminal instruction emitters
-    void EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step);
-    virtual void EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::ReturnToDispatch terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::PopRSBHint terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::FastDispatchHint terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::If terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
-    virtual void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) = 0;
+#endif
+    virtual void EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step) noexcept = 0;
 
     // Patching
     struct PatchInformation {
-        std::vector<CodePtr> jg;
-        std::vector<CodePtr> jz;
-        std::vector<CodePtr> jmp;
-        std::vector<CodePtr> mov_rcx;
+        boost::container::small_vector<CodePtr, 4> jg; //4*8=32
+        boost::container::small_vector<CodePtr, 4> jz; //4*8=32
+        boost::container::small_vector<CodePtr, 4> jmp; //4*8=32
+        boost::container::small_vector<CodePtr, 4> mov_rcx; //4*8=32
     };
     void Patch(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr);
     virtual void Unpatch(const IR::LocationDescriptor& target_desc);
@@ -138,8 +130,11 @@ protected:
     // State
     BlockOfCode& code;
     ExceptionHandler exception_handler;
-    tsl::robin_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
-    tsl::robin_map<IR::LocationDescriptor, PatchInformation> patch_information;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, PatchInformation> patch_information;
+
+    // We need materialized protected members
+    friend class A64EmitX64;
 };
 
 }  // namespace Dynarmic::Backend::X64

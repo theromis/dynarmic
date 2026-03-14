@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -9,7 +12,7 @@
 #include <type_traits>
 #include <utility>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/mp/metavalue/lift_value.hpp>
 #include <mcl/mp/typelist/cartesian_product.hpp>
 #include <mcl/mp/typelist/get.hpp>
@@ -18,7 +21,7 @@
 #include <mcl/mp/typelist/lower_to_tuple.hpp>
 #include <mcl/type_traits/function_info.hpp>
 #include <mcl/type_traits/integer_of_size.hpp>
-#include <xbyak/xbyak.h>
+#include "dynarmic/backend/x64/xbyak.h"
 
 #include "dynarmic/backend/x64/abi.h"
 #include "dynarmic/backend/x64/block_of_code.h"
@@ -33,29 +36,15 @@
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/microinstruction.h"
 
+#define FCODE(NAME) [&](auto... args) { if (fsize == 32) code.NAME##s(args...); else code.NAME##d(args...); }
+#define ICODE(NAME) [&](auto... args) { if (fsize == 32) code.NAME##d(args...); else code.NAME##q(args...); }
+
 namespace Dynarmic::Backend::X64 {
 
 using namespace Xbyak::util;
 namespace mp = mcl::mp;
 
 namespace {
-
-#define FCODE(NAME)                  \
-    [&code](auto... args) {          \
-        if constexpr (fsize == 32) { \
-            code.NAME##s(args...);   \
-        } else {                     \
-            code.NAME##d(args...);   \
-        }                            \
-    }
-#define ICODE(NAME)                  \
-    [&code](auto... args) {          \
-        if constexpr (fsize == 32) { \
-            code.NAME##d(args...);   \
-        } else {                     \
-            code.NAME##q(args...);   \
-        }                            \
-    }
 
 template<typename Lambda>
 void MaybeStandardFPSCRValue(BlockOfCode& code, EmitContext& ctx, bool fpcr_controlled, Lambda lambda) {
@@ -107,7 +96,7 @@ void HandleNaNs(BlockOfCode& code, EmitContext& ctx, bool fpcr_controlled, std::
     if (code.HasHostFeature(HostFeature::SSE41)) {
         code.ptest(nan_mask, nan_mask);
     } else {
-        const Xbyak::Reg32 bitmask = ctx.reg_alloc.ScratchGpr().cvt32();
+        const Xbyak::Reg32 bitmask = ctx.reg_alloc.ScratchGpr(code).cvt32();
         code.movmskps(bitmask, nan_mask);
         code.cmp(bitmask, 0);
     }
@@ -122,11 +111,11 @@ void HandleNaNs(BlockOfCode& code, EmitContext& ctx, bool fpcr_controlled, std::
 
         const Xbyak::Xmm result = xmms[0];
 
-        code.sub(rsp, 8);
+        code.lea(rsp, ptr[rsp - 8]);
         ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
 
         const size_t stack_space = xmms.size() * 16;
-        code.sub(rsp, static_cast<u32>(stack_space + ABI_SHADOW_SPACE));
+        code.lea(rsp, ptr[rsp - static_cast<u32>(stack_space + ABI_SHADOW_SPACE)]);
         for (size_t i = 0; i < xmms.size(); ++i) {
             code.movaps(xword[rsp + ABI_SHADOW_SPACE + i * 16], xmms[i]);
         }
@@ -323,13 +312,13 @@ void EmitTwoOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
         Xbyak::Xmm result;
 
         if constexpr (std::is_member_function_pointer_v<Function>) {
-            result = ctx.reg_alloc.UseScratchXmm(args[0]);
+            result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 (code.*fn)(result);
             });
         } else {
-            const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(args[0]);
-            result = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(code, args[0]);
+            result = ctx.reg_alloc.ScratchXmm(code);
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 fn(result, xmm_a);
             });
@@ -339,13 +328,13 @@ void EmitTwoOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
             ForceToDefaultNaN<fsize>(code, ctx.FPCR(fpcr_controlled), result);
         }
 
-        ctx.reg_alloc.DefineValue(inst, result);
+        ctx.reg_alloc.DefineValue(code, inst, result);
         return;
     }
 
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm(code);
 
     if constexpr (std::is_member_function_pointer_v<Function>) {
         code.movaps(result, xmm_a);
@@ -363,7 +352,7 @@ void EmitTwoOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
 
     HandleNaNs<fsize, 1>(code, ctx, fpcr_controlled, {result, xmm_a}, nan_mask, nan_handler);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 enum class CheckInputNaN {
@@ -379,8 +368,8 @@ void EmitThreeOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* i
     const bool fpcr_controlled = args[2].GetImmediateU1();
 
     if (ctx.FPCR(fpcr_controlled).DN() || ctx.HasOptimization(OptimizationFlag::Unsafe_InaccurateNaN)) {
-        const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseScratchXmm(args[0]);
-        const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(args[1]);
+        const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+        const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(code, args[1]);
 
         if constexpr (std::is_member_function_pointer_v<Function>) {
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
@@ -396,14 +385,14 @@ void EmitThreeOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* i
             ForceToDefaultNaN<fsize>(code, ctx.FPCR(fpcr_controlled), xmm_a);
         }
 
-        ctx.reg_alloc.DefineValue(inst, xmm_a);
+        ctx.reg_alloc.DefineValue(code, inst, xmm_a);
         return;
     }
 
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(args[1]);
-    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(code, args[1]);
+    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm(code);
 
     code.movaps(result, xmm_a);
 
@@ -433,21 +422,21 @@ void EmitThreeOpVectorOperation(BlockOfCode& code, EmitContext& ctx, IR::Inst* i
 
     HandleNaNs<fsize, 2>(code, ctx, fpcr_controlled, {result, xmm_a, xmm_b}, nan_mask, nan_handler);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
-template<typename Lambda>
-void EmitTwoOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xbyak::Xmm result, Xbyak::Xmm arg1, Lambda lambda, bool fpcr_controlled) {
-    const auto fn = static_cast<mcl::equivalent_function_type<Lambda>*>(lambda);
+template<typename F>
+void EmitTwoOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xbyak::Xmm result, Xbyak::Xmm arg1, F lambda, bool fpcr_controlled) {
+    const auto fn = static_cast<mcl::equivalent_function_type<F>*>(lambda);
 
     const u32 fpcr = ctx.FPCR(fpcr_controlled).Value();
 
     constexpr u32 stack_space = 2 * 16;
-    code.sub(rsp, stack_space + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (stack_space + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM1, ptr[rsp + ABI_SHADOW_SPACE + 0 * 16]);
     code.lea(code.ABI_PARAM2, ptr[rsp + ABI_SHADOW_SPACE + 1 * 16]);
     code.mov(code.ABI_PARAM3.cvt32(), fpcr);
-    code.lea(code.ABI_PARAM4, code.ptr[code.r15 + code.GetJitStateInfo().offsetof_fpsr_exc]);
+    code.lea(code.ABI_PARAM4, code.ptr[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_fpsr_exc]);
 
     code.movaps(xword[code.ABI_PARAM2], arg1);
     code.CallFunction(fn);
@@ -456,19 +445,19 @@ void EmitTwoOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xbyak
     code.add(rsp, stack_space + ABI_SHADOW_SPACE);
 }
 
-template<size_t fpcr_controlled_arg_index = 1, typename Lambda>
-void EmitTwoOpFallback(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, Lambda lambda) {
+template<size_t fpcr_controlled_arg_index = 1, typename F>
+void EmitTwoOpFallback(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, F lambda) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
     ctx.reg_alloc.EndOfAllocScope();
-    ctx.reg_alloc.HostCall(nullptr);
+    ctx.reg_alloc.HostCall(code, nullptr);
 
     const bool fpcr_controlled = args[fpcr_controlled_arg_index].GetImmediateU1();
 
     EmitTwoOpFallbackWithoutRegAlloc(code, ctx, result, arg1, lambda, fpcr_controlled);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 template<typename Lambda>
@@ -479,21 +468,21 @@ void EmitThreeOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xby
 
 #ifdef _WIN32
     constexpr u32 stack_space = 4 * 16;
-    code.sub(rsp, stack_space + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (stack_space + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM1, ptr[rsp + ABI_SHADOW_SPACE + 1 * 16]);
     code.lea(code.ABI_PARAM2, ptr[rsp + ABI_SHADOW_SPACE + 2 * 16]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE + 3 * 16]);
     code.mov(code.ABI_PARAM4.cvt32(), fpcr);
-    code.lea(rax, code.ptr[code.r15 + code.GetJitStateInfo().offsetof_fpsr_exc]);
+    code.lea(rax, code.ptr[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_fpsr_exc]);
     code.mov(qword[rsp + ABI_SHADOW_SPACE + 0], rax);
 #else
     constexpr u32 stack_space = 3 * 16;
-    code.sub(rsp, stack_space + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (stack_space + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM1, ptr[rsp + ABI_SHADOW_SPACE + 0 * 16]);
     code.lea(code.ABI_PARAM2, ptr[rsp + ABI_SHADOW_SPACE + 1 * 16]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE + 2 * 16]);
     code.mov(code.ABI_PARAM4.cvt32(), fpcr);
-    code.lea(code.ABI_PARAM5, code.ptr[code.r15 + code.GetJitStateInfo().offsetof_fpsr_exc]);
+    code.lea(code.ABI_PARAM5, code.ptr[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_fpsr_exc]);
 #endif
 
     code.movaps(xword[code.ABI_PARAM2], arg1);
@@ -512,17 +501,17 @@ void EmitThreeOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xby
 template<typename Lambda>
 void EmitThreeOpFallback(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, Lambda lambda) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm arg2 = ctx.reg_alloc.UseXmm(args[1]);
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm arg2 = ctx.reg_alloc.UseXmm(code, args[1]);
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
     ctx.reg_alloc.EndOfAllocScope();
-    ctx.reg_alloc.HostCall(nullptr);
+    ctx.reg_alloc.HostCall(code, nullptr);
 
     const bool fpcr_controlled = args[2].GetImmediateU1();
 
     EmitThreeOpFallbackWithoutRegAlloc(code, ctx, result, arg1, arg2, lambda, fpcr_controlled);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 enum class LoadPreviousResult {
@@ -536,23 +525,23 @@ void EmitFourOpFallbackWithoutRegAlloc(BlockOfCode& code, EmitContext& ctx, Xbya
 
 #ifdef _WIN32
     constexpr u32 stack_space = 5 * 16;
-    code.sub(rsp, stack_space + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (stack_space + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM1, ptr[rsp + ABI_SHADOW_SPACE + 1 * 16]);
     code.lea(code.ABI_PARAM2, ptr[rsp + ABI_SHADOW_SPACE + 2 * 16]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE + 3 * 16]);
     code.lea(code.ABI_PARAM4, ptr[rsp + ABI_SHADOW_SPACE + 4 * 16]);
     code.mov(qword[rsp + ABI_SHADOW_SPACE + 0], ctx.FPCR(fpcr_controlled).Value());
-    code.lea(rax, code.ptr[code.r15 + code.GetJitStateInfo().offsetof_fpsr_exc]);
+    code.lea(rax, code.ptr[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_fpsr_exc]);
     code.mov(qword[rsp + ABI_SHADOW_SPACE + 8], rax);
 #else
     constexpr u32 stack_space = 4 * 16;
-    code.sub(rsp, stack_space + ABI_SHADOW_SPACE);
+    code.lea(rsp, ptr[rsp - (stack_space + ABI_SHADOW_SPACE)]);
     code.lea(code.ABI_PARAM1, ptr[rsp + ABI_SHADOW_SPACE + 0 * 16]);
     code.lea(code.ABI_PARAM2, ptr[rsp + ABI_SHADOW_SPACE + 1 * 16]);
     code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE + 2 * 16]);
     code.lea(code.ABI_PARAM4, ptr[rsp + ABI_SHADOW_SPACE + 3 * 16]);
     code.mov(code.ABI_PARAM5.cvt32(), ctx.FPCR(fpcr_controlled).Value());
-    code.lea(code.ABI_PARAM6, code.ptr[code.r15 + code.GetJitStateInfo().offsetof_fpsr_exc]);
+    code.lea(code.ABI_PARAM6, code.ptr[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_fpsr_exc]);
 #endif
 
     if constexpr (load_previous_result == LoadPreviousResult::Yes) {
@@ -576,16 +565,16 @@ template<typename Lambda>
 void EmitFourOpFallback(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, Lambda lambda) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[3].GetImmediateU1();
-    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm arg2 = ctx.reg_alloc.UseXmm(args[1]);
-    const Xbyak::Xmm arg3 = ctx.reg_alloc.UseXmm(args[2]);
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm arg1 = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm arg2 = ctx.reg_alloc.UseXmm(code, args[1]);
+    const Xbyak::Xmm arg3 = ctx.reg_alloc.UseXmm(code, args[2]);
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
     ctx.reg_alloc.EndOfAllocScope();
-    ctx.reg_alloc.HostCall(nullptr);
+    ctx.reg_alloc.HostCall(code, nullptr);
 
     EmitFourOpFallbackWithoutRegAlloc(code, ctx, result, arg1, arg2, arg3, lambda, fpcr_controlled);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 }  // anonymous namespace
@@ -593,9 +582,9 @@ void EmitFourOpFallback(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, Lam
 template<size_t fsize>
 void FPVectorAbs(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     code.andps(a, GetNonSignMaskVector<fsize>(code));
-    ctx.reg_alloc.DefineValue(inst, a);
+    ctx.reg_alloc.DefineValue(code, inst, a);
 }
 
 void EmitX64::EmitFPVectorAbs16(EmitContext& ctx, IR::Inst* inst) {
@@ -637,76 +626,77 @@ void EmitX64::EmitFPVectorEqual16(EmitContext& ctx, IR::Inst* inst) {
 void EmitX64::EmitFPVectorEqual32(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(args[0]);
-    const Xbyak::Xmm b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[1]) : ctx.reg_alloc.UseXmm(args[1]);
+    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[1]) : ctx.reg_alloc.UseXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<32>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmpeqps(a, b);
     });
 
-    ctx.reg_alloc.DefineValue(inst, a);
+    ctx.reg_alloc.DefineValue(code, inst, a);
 }
 
 void EmitX64::EmitFPVectorEqual64(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(args[0]);
-    const Xbyak::Xmm b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[1]) : ctx.reg_alloc.UseXmm(args[1]);
+    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[1]) : ctx.reg_alloc.UseXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<64>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmpeqpd(a, b);
     });
 
-    ctx.reg_alloc.DefineValue(inst, a);
+    ctx.reg_alloc.DefineValue(code, inst, a);
+}
+
+template<FP::RoundingMode rounding_mode>
+static void EmitFPVectorFromHalf32Thunk(VectorArray<u32>& output, const VectorArray<u16>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
+    for (size_t i = 0; i < output.size(); ++i)
+        output[i] = FP::FPConvert<u32, u16>(input[i], fpcr, rounding_mode, fpsr);
 }
 
 void EmitX64::EmitFPVectorFromHalf32(EmitContext& ctx, IR::Inst* inst) {
-    const auto rounding_mode = static_cast<FP::RoundingMode>(inst->GetArg(1).GetU8());
+    const auto rounding_mode = FP::RoundingMode(inst->GetArg(1).GetU8());
     const bool fpcr_controlled = inst->GetArg(2).GetU1();
 
     if (code.HasHostFeature(HostFeature::F16C) && !ctx.FPCR().AHP() && !ctx.FPCR().FZ16()) {
         auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-        const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-        const Xbyak::Xmm value = ctx.reg_alloc.UseXmm(args[0]);
+        const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+        const Xbyak::Xmm value = ctx.reg_alloc.UseXmm(code, args[0]);
 
         code.vcvtph2ps(result, value);
         ForceToDefaultNaN<32>(code, ctx.FPCR(fpcr_controlled), result);
 
-        ctx.reg_alloc.DefineValue(inst, result);
-        return;
+        ctx.reg_alloc.DefineValue(code, inst, result);
+    } else {
+        switch (rounding_mode) {
+        case FP::RoundingMode::ToNearest_TieEven:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorFromHalf32Thunk<FP::RoundingMode::ToNearest_TieEven>);
+            break;
+        case FP::RoundingMode::TowardsPlusInfinity:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorFromHalf32Thunk<FP::RoundingMode::TowardsPlusInfinity>);
+            break;
+        case FP::RoundingMode::TowardsMinusInfinity:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorFromHalf32Thunk<FP::RoundingMode::TowardsMinusInfinity>);
+            break;
+        case FP::RoundingMode::TowardsZero:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorFromHalf32Thunk<FP::RoundingMode::TowardsZero>);
+            break;
+        case FP::RoundingMode::ToNearest_TieAwayFromZero:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorFromHalf32Thunk<FP::RoundingMode::ToNearest_TieAwayFromZero>);
+            break;
+        default:
+            UNREACHABLE();
+        }
     }
-
-    using rounding_list = mp::list<
-        mp::lift_value<FP::RoundingMode::ToNearest_TieEven>,
-        mp::lift_value<FP::RoundingMode::TowardsPlusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsMinusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsZero>,
-        mp::lift_value<FP::RoundingMode::ToNearest_TieAwayFromZero>>;
-
-    static const auto lut = Common::GenerateLookupTableFromList(
-        []<typename I>(I) {
-            return std::pair{
-                mp::lower_to_tuple_v<I>,
-                Common::FptrCast(
-                    [](VectorArray<u32>& output, const VectorArray<u16>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
-                        constexpr FP::RoundingMode rounding_mode = mp::get<0, I>::value;
-
-                        for (size_t i = 0; i < output.size(); ++i) {
-                            output[i] = FP::FPConvert<u32, u16>(input[i], fpcr, rounding_mode, fpsr);
-                        }
-                    })};
-        },
-        mp::cartesian_product<rounding_list>{});
-
-    EmitTwoOpFallback<2>(code, ctx, inst, lut.at(std::make_tuple(rounding_mode)));
 }
 
 void EmitX64::EmitFPVectorFromSignedFixed32(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     const int fbits = args[1].GetImmediateU8();
     const FP::RoundingMode rounding_mode = static_cast<FP::RoundingMode>(args[2].GetImmediateU8());
     const bool fpcr_controlled = args[3].GetImmediateU1();
@@ -719,12 +709,12 @@ void EmitX64::EmitFPVectorFromSignedFixed32(EmitContext& ctx, IR::Inst* inst) {
         }
     });
 
-    ctx.reg_alloc.DefineValue(inst, xmm);
+    ctx.reg_alloc.DefineValue(code, inst, xmm);
 }
 
 void EmitX64::EmitFPVectorFromSignedFixed64(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     const int fbits = args[1].GetImmediateU8();
     const FP::RoundingMode rounding_mode = static_cast<FP::RoundingMode>(args[2].GetImmediateU8());
     const bool fpcr_controlled = args[3].GetImmediateU1();
@@ -734,8 +724,8 @@ void EmitX64::EmitFPVectorFromSignedFixed64(EmitContext& ctx, IR::Inst* inst) {
         if (code.HasHostFeature(HostFeature::AVX512_OrthoFloat)) {
             code.vcvtqq2pd(xmm, xmm);
         } else if (code.HasHostFeature(HostFeature::SSE41)) {
-            const Xbyak::Xmm xmm_tmp = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr();
+            const Xbyak::Xmm xmm_tmp = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
 
             // First quadword
             code.movq(tmp, xmm);
@@ -748,9 +738,9 @@ void EmitX64::EmitFPVectorFromSignedFixed64(EmitContext& ctx, IR::Inst* inst) {
             // Combine
             code.unpcklpd(xmm, xmm_tmp);
         } else {
-            const Xbyak::Xmm high_xmm = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm xmm_tmp = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr();
+            const Xbyak::Xmm high_xmm = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm xmm_tmp = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Reg64 tmp = ctx.reg_alloc.ScratchGpr(code);
 
             // First quadword
             code.movhlps(high_xmm, xmm);
@@ -770,12 +760,12 @@ void EmitX64::EmitFPVectorFromSignedFixed64(EmitContext& ctx, IR::Inst* inst) {
         }
     });
 
-    ctx.reg_alloc.DefineValue(inst, xmm);
+    ctx.reg_alloc.DefineValue(code, inst, xmm);
 }
 
 void EmitX64::EmitFPVectorFromUnsignedFixed32(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     const int fbits = args[1].GetImmediateU8();
     const FP::RoundingMode rounding_mode = static_cast<FP::RoundingMode>(args[2].GetImmediateU8());
     const bool fpcr_controlled = args[3].GetImmediateU1();
@@ -789,7 +779,7 @@ void EmitX64::EmitFPVectorFromUnsignedFixed32(EmitContext& ctx, IR::Inst* inst) 
             const Xbyak::Address mem_53000000 = code.BConst<32>(xword, 0x53000000);
             const Xbyak::Address mem_D3000080 = code.BConst<32>(xword, 0xD3000080);
 
-            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
 
             if (code.HasHostFeature(HostFeature::AVX)) {
                 code.vpblendw(tmp, xmm, mem_4B000000, 0b10101010);
@@ -820,12 +810,12 @@ void EmitX64::EmitFPVectorFromUnsignedFixed32(EmitContext& ctx, IR::Inst* inst) 
         }
     });
 
-    ctx.reg_alloc.DefineValue(inst, xmm);
+    ctx.reg_alloc.DefineValue(code, inst, xmm);
 }
 
 void EmitX64::EmitFPVectorFromUnsignedFixed64(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm xmm = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     const int fbits = args[1].GetImmediateU8();
     const FP::RoundingMode rounding_mode = static_cast<FP::RoundingMode>(args[2].GetImmediateU8());
     const bool fpcr_controlled = args[3].GetImmediateU1();
@@ -838,9 +828,9 @@ void EmitX64::EmitFPVectorFromUnsignedFixed64(EmitContext& ctx, IR::Inst* inst) 
             const Xbyak::Address unpack = code.Const(xword, 0x4530000043300000, 0);
             const Xbyak::Address subtrahend = code.Const(xword, 0x4330000000000000, 0x4530000000000000);
 
-            const Xbyak::Xmm unpack_reg = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm subtrahend_reg = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm tmp1 = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm unpack_reg = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm subtrahend_reg = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm tmp1 = ctx.reg_alloc.ScratchXmm(code);
 
             if (code.HasHostFeature(HostFeature::AVX)) {
                 code.vmovapd(unpack_reg, unpack);
@@ -856,7 +846,7 @@ void EmitX64::EmitFPVectorFromUnsignedFixed64(EmitContext& ctx, IR::Inst* inst) 
 
                 code.vhaddpd(xmm, tmp1, xmm);
             } else {
-                const Xbyak::Xmm tmp2 = ctx.reg_alloc.ScratchXmm();
+                const Xbyak::Xmm tmp2 = ctx.reg_alloc.ScratchXmm(code);
 
                 code.movapd(unpack_reg, unpack);
                 code.movapd(subtrahend_reg, subtrahend);
@@ -887,63 +877,63 @@ void EmitX64::EmitFPVectorFromUnsignedFixed64(EmitContext& ctx, IR::Inst* inst) 
         }
     });
 
-    ctx.reg_alloc.DefineValue(inst, xmm);
+    ctx.reg_alloc.DefineValue(code, inst, xmm);
 }
 
 void EmitX64::EmitFPVectorGreater32(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[0]) : ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(args[1]);
+    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[0]) : ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<32>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmpltps(b, a);
     });
 
-    ctx.reg_alloc.DefineValue(inst, b);
+    ctx.reg_alloc.DefineValue(code, inst, b);
 }
 
 void EmitX64::EmitFPVectorGreater64(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[0]) : ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(args[1]);
+    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[0]) : ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<64>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmpltpd(b, a);
     });
 
-    ctx.reg_alloc.DefineValue(inst, b);
+    ctx.reg_alloc.DefineValue(code, inst, b);
 }
 
 void EmitX64::EmitFPVectorGreaterEqual32(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[0]) : ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(args[1]);
+    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[0]) : ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<32>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmpleps(b, a);
     });
 
-    ctx.reg_alloc.DefineValue(inst, b);
+    ctx.reg_alloc.DefineValue(code, inst, b);
 }
 
 void EmitX64::EmitFPVectorGreaterEqual64(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const bool fpcr_controlled = args[2].GetImmediateU1();
-    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[0]) : ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(args[1]);
+    const Xbyak::Xmm a = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[0]) : ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm b = ctx.reg_alloc.UseScratchXmm(code, args[1]);
 
     MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
         DenormalsAreZero<64>(code, ctx.FPCR(fpcr_controlled), {a, b}, xmm0);
         code.cmplepd(b, a);
     });
 
-    ctx.reg_alloc.DefineValue(inst, b);
+    ctx.reg_alloc.DefineValue(code, inst, b);
 }
 
 template<size_t fsize, bool is_max>
@@ -952,12 +942,12 @@ static void EmitFPVectorMinMax(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
 
     if (ctx.FPCR(fpcr_controlled).DN()) {
         auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(args[0]);
-        const Xbyak::Xmm xmm_b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(args[1]) : ctx.reg_alloc.UseXmm(args[1]);
+        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+        const Xbyak::Xmm xmm_b = ctx.FPCR(fpcr_controlled).FZ() ? ctx.reg_alloc.UseScratchXmm(code, args[1]) : ctx.reg_alloc.UseXmm(code, args[1]);
 
         const Xbyak::Xmm mask = xmm0;
-        const Xbyak::Xmm eq = ctx.reg_alloc.ScratchXmm();
-        const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm();
+        const Xbyak::Xmm eq = ctx.reg_alloc.ScratchXmm(code);
+        const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm(code);
 
         MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
             DenormalsAreZero<fsize>(code, ctx.FPCR(fpcr_controlled), {result, xmm_b}, mask);
@@ -1004,7 +994,7 @@ static void EmitFPVectorMinMax(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             }
         });
 
-        ctx.reg_alloc.DefineValue(inst, result);
+        ctx.reg_alloc.DefineValue(code, inst, result);
 
         return;
     }
@@ -1012,11 +1002,11 @@ static void EmitFPVectorMinMax(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
     EmitThreeOpVectorOperation<fsize, DefaultIndexer>(
         code, ctx, inst, [&](const Xbyak::Xmm& result, Xbyak::Xmm xmm_b) {
             const Xbyak::Xmm mask = xmm0;
-            const Xbyak::Xmm eq = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm eq = ctx.reg_alloc.ScratchXmm(code);
 
             if (ctx.FPCR(fpcr_controlled).FZ()) {
                 const Xbyak::Xmm prev_xmm_b = xmm_b;
-                xmm_b = ctx.reg_alloc.ScratchXmm();
+                xmm_b = ctx.reg_alloc.ScratchXmm(code);
                 code.movaps(xmm_b, prev_xmm_b);
                 DenormalsAreZero<fsize>(code, ctx.FPCR(fpcr_controlled), {result, xmm_b}, mask);
             }
@@ -1063,13 +1053,13 @@ static void EmitFPVectorMinMaxNumeric(BlockOfCode& code, EmitContext& ctx, IR::I
     const bool fpcr_controlled = inst->GetArg(2).GetU1();
 
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseScratchXmm(args[0]);
-    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseScratchXmm(args[1]);
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-    const Xbyak::Xmm intermediate_result = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseScratchXmm(code, args[1]);
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+    const Xbyak::Xmm intermediate_result = ctx.reg_alloc.ScratchXmm(code);
 
     const Xbyak::Xmm tmp1 = xmm0;
-    const Xbyak::Xmm tmp2 = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm tmp2 = ctx.reg_alloc.ScratchXmm(code);
 
     // NaN requirements:
     // op1     op2      result
@@ -1149,7 +1139,7 @@ static void EmitFPVectorMinMaxNumeric(BlockOfCode& code, EmitContext& ctx, IR::I
             }
         });
 
-        ctx.reg_alloc.DefineValue(inst, result);
+        ctx.reg_alloc.DefineValue(code, inst, result);
         return;
     }
 
@@ -1240,7 +1230,7 @@ static void EmitFPVectorMinMaxNumeric(BlockOfCode& code, EmitContext& ctx, IR::I
         }
     });
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 void EmitX64::EmitFPVectorMax32(EmitContext& ctx, IR::Inst* inst) {
@@ -1326,27 +1316,27 @@ void EmitFPVectorMulAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
         if (code.HasHostFeature(HostFeature::FMA) && !needs_rounding_correction && !needs_nan_correction) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(args[0]);
-            const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm xmm_c = ctx.reg_alloc.UseXmm(args[2]);
+            const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+            const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm xmm_c = ctx.reg_alloc.UseXmm(code, args[2]);
 
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 FCODE(vfmadd231p)(result, xmm_b, xmm_c);
                 ForceToDefaultNaN<fsize>(code, ctx.FPCR(fpcr_controlled), result);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
         if (code.HasHostFeature(HostFeature::FMA | HostFeature::AVX)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm xmm_c = ctx.reg_alloc.UseXmm(args[2]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm xmm_c = ctx.reg_alloc.UseXmm(code, args[2]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
 
             SharedLabel end = GenSharedLabel(), fallback = GenSharedLabel();
 
@@ -1371,7 +1361,7 @@ void EmitFPVectorMulAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
 
             ctx.deferred_emits.emplace_back([=, &code, &ctx] {
                 code.L(*fallback);
-                code.sub(rsp, 8);
+                code.lea(rsp, ptr[rsp - 8]);
                 ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
                 if (needs_rounding_correction && needs_nan_correction) {
                     EmitFourOpFallbackWithoutRegAlloc<LoadPreviousResult::Yes>(code, ctx, result, xmm_a, xmm_b, xmm_c, EmitFPVectorMulAddFallback<FPT, true, true>, fpcr_controlled);
@@ -1385,21 +1375,21 @@ void EmitFPVectorMulAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
                 code.jmp(*end, code.T_NEAR);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
         if (ctx.HasOptimization(OptimizationFlag::Unsafe_UnfuseFMA)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseScratchXmm(args[1]);
-            const Xbyak::Xmm operand3 = ctx.reg_alloc.UseXmm(args[2]);
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseScratchXmm(code, args[1]);
+            const Xbyak::Xmm operand3 = ctx.reg_alloc.UseXmm(code, args[2]);
 
             FCODE(mulp)(operand2, operand3);
             FCODE(addp)(operand1, operand2);
 
-            ctx.reg_alloc.DefineValue(inst, operand1);
+            ctx.reg_alloc.DefineValue(code, inst, operand1);
             return;
         }
     }
@@ -1427,10 +1417,10 @@ static void EmitFPVectorMulX(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst
     const bool fpcr_controlled = args[2].GetImmediateU1();
 
     if (ctx.FPCR(fpcr_controlled).DN() && code.HasHostFeature(HostFeature::AVX)) {
-        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(args[0]);
-        const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(args[1]);
-        const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
-        const Xbyak::Xmm twos = ctx.reg_alloc.ScratchXmm();
+        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+        const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(code, args[1]);
+        const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
+        const Xbyak::Xmm twos = ctx.reg_alloc.ScratchXmm(code);
 
         MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
             FCODE(vcmpunordp)(xmm0, result, operand);
@@ -1444,14 +1434,14 @@ static void EmitFPVectorMulX(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst
             FCODE(blendvp)(result, twos);
         });
 
-        ctx.reg_alloc.DefineValue(inst, result);
+        ctx.reg_alloc.DefineValue(code, inst, result);
         return;
     }
 
-    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(args[0]);
-    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(args[1]);
-    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm();
+    const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+    const Xbyak::Xmm xmm_a = ctx.reg_alloc.UseXmm(code, args[0]);
+    const Xbyak::Xmm xmm_b = ctx.reg_alloc.UseXmm(code, args[1]);
+    const Xbyak::Xmm nan_mask = ctx.reg_alloc.ScratchXmm(code);
 
     code.movaps(nan_mask, xmm_b);
     code.movaps(result, xmm_a);
@@ -1474,7 +1464,7 @@ static void EmitFPVectorMulX(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst
 
     HandleNaNs<fsize, 2>(code, ctx, fpcr_controlled, {result, xmm_a, xmm_b}, nan_mask, nan_handler);
 
-    ctx.reg_alloc.DefineValue(inst, result);
+    ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
 void EmitX64::EmitFPVectorMulX32(EmitContext& ctx, IR::Inst* inst) {
@@ -1492,12 +1482,12 @@ void FPVectorNeg(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
 
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(args[0]);
+    const Xbyak::Xmm a = ctx.reg_alloc.UseScratchXmm(code, args[0]);
     const Xbyak::Address mask = code.BConst<fsize>(xword, sign_mask);
 
     code.xorps(a, mask);
 
-    ctx.reg_alloc.DefineValue(inst, a);
+    ctx.reg_alloc.DefineValue(code, inst, a);
 }
 
 void EmitX64::EmitFPVectorNeg16(EmitContext& ctx, IR::Inst* inst) {
@@ -1522,7 +1512,7 @@ void EmitX64::EmitFPVectorPairedAdd64(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitFPVectorPairedAddLower32(EmitContext& ctx, IR::Inst* inst) {
     EmitThreeOpVectorOperation<32, PairedLowerIndexer>(code, ctx, inst, [&](Xbyak::Xmm result, Xbyak::Xmm xmm_b) {
-        const Xbyak::Xmm zero = ctx.reg_alloc.ScratchXmm();
+        const Xbyak::Xmm zero = ctx.reg_alloc.ScratchXmm(code);
         code.xorps(zero, zero);
         code.punpcklqdq(result, xmm_b);
         code.haddps(result, zero);
@@ -1531,7 +1521,7 @@ void EmitX64::EmitFPVectorPairedAddLower32(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitFPVectorPairedAddLower64(EmitContext& ctx, IR::Inst* inst) {
     EmitThreeOpVectorOperation<64, PairedLowerIndexer>(code, ctx, inst, [&](Xbyak::Xmm result, Xbyak::Xmm xmm_b) {
-        const Xbyak::Xmm zero = ctx.reg_alloc.ScratchXmm();
+        const Xbyak::Xmm zero = ctx.reg_alloc.ScratchXmm(code);
         code.xorps(zero, zero);
         code.punpcklqdq(result, xmm_b);
         code.haddpd(result, zero);
@@ -1545,8 +1535,8 @@ static void EmitRecipEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
     if constexpr (fsize != 16) {
         if (ctx.HasOptimization(OptimizationFlag::Unsafe_ReducedErrorFP)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
 
             if (code.HasHostFeature(HostFeature::AVX512_OrthoFloat)) {
                 FCODE(vrcp14p)(result, operand);
@@ -1560,7 +1550,7 @@ static void EmitRecipEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
                 }
             }
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
     }
@@ -1599,16 +1589,16 @@ static void EmitRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
             const bool fpcr_controlled = args[2].GetImmediateU1();
 
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
 
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 code.movaps(result, GetVectorOf<fsize, false, 0, 2>(code));
                 FCODE(vfnmadd231p)(result, operand1, operand2);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
@@ -1616,10 +1606,10 @@ static void EmitRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
             const bool fpcr_controlled = args[2].GetImmediateU1();
 
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
 
             SharedLabel end = GenSharedLabel(), fallback = GenSharedLabel();
 
@@ -1635,7 +1625,7 @@ static void EmitRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
 
             ctx.deferred_emits.emplace_back([=, &code, &ctx] {
                 code.L(*fallback);
-                code.sub(rsp, 8);
+                code.lea(rsp, ptr[rsp - 8]);
                 ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
                 EmitThreeOpFallbackWithoutRegAlloc(code, ctx, result, operand1, operand2, fallback_fn, fpcr_controlled);
                 ABI_PopCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
@@ -1643,22 +1633,22 @@ static void EmitRecipStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
                 code.jmp(*end, code.T_NEAR);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
         if (ctx.HasOptimization(OptimizationFlag::Unsafe_UnfuseFMA)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
 
             code.movaps(result, GetVectorOf<fsize, false, 0, 2>(code));
             FCODE(mulp)(operand1, operand2);
             FCODE(subp)(result, operand1);
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
     }
@@ -1678,25 +1668,26 @@ void EmitX64::EmitFPVectorRecipStepFused64(EmitContext& ctx, IR::Inst* inst) {
     EmitRecipStepFused<64>(code, ctx, inst);
 }
 
+template<typename FPT, FP::RoundingMode rounding_mode, bool exact>
+static void EmitFPVectorRoundIntThunk(VectorArray<FPT>& output, const VectorArray<FPT>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
+    for (size_t i = 0; i < output.size(); ++i)
+        output[i] = FPT(FP::FPRoundInt<FPT>(input[i], fpcr, rounding_mode, exact, fpsr));
+}
+
 template<size_t fsize>
 void EmitFPVectorRoundInt(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
-    const auto rounding = static_cast<FP::RoundingMode>(inst->GetArg(1).GetU8());
+    const auto rounding = FP::RoundingMode(inst->GetArg(1).GetU8());
     const bool exact = inst->GetArg(2).GetU1();
 
     if constexpr (fsize != 16) {
         if (code.HasHostFeature(HostFeature::SSE41) && rounding != FP::RoundingMode::ToNearest_TieAwayFromZero && !exact) {
             const u8 round_imm = [&]() -> u8 {
                 switch (rounding) {
-                case FP::RoundingMode::ToNearest_TieEven:
-                    return 0b00;
-                case FP::RoundingMode::TowardsPlusInfinity:
-                    return 0b10;
-                case FP::RoundingMode::TowardsMinusInfinity:
-                    return 0b01;
-                case FP::RoundingMode::TowardsZero:
-                    return 0b11;
-                default:
-                    UNREACHABLE();
+                case FP::RoundingMode::ToNearest_TieEven: return 0b00;
+                case FP::RoundingMode::TowardsPlusInfinity: return 0b10;
+                case FP::RoundingMode::TowardsMinusInfinity: return 0b01;
+                case FP::RoundingMode::TowardsZero: return 0b11;
+                default: UNREACHABLE();
                 }
             }();
 
@@ -1708,32 +1699,37 @@ void EmitFPVectorRoundInt(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
         }
     }
 
-    using rounding_list = mp::list<
-        mp::lift_value<FP::RoundingMode::ToNearest_TieEven>,
-        mp::lift_value<FP::RoundingMode::TowardsPlusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsMinusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsZero>,
-        mp::lift_value<FP::RoundingMode::ToNearest_TieAwayFromZero>>;
-    using exact_list = mp::list<std::true_type, std::false_type>;
-
-    static const auto lut = Common::GenerateLookupTableFromList(
-        []<typename I>(I) {
-            using FPT = mcl::unsigned_integer_of_size<fsize>;  // WORKAROUND: For issue 678 on MSVC
-            return std::pair{
-                mp::lower_to_tuple_v<I>,
-                Common::FptrCast(
-                    [](VectorArray<FPT>& output, const VectorArray<FPT>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
-                        constexpr FP::RoundingMode rounding_mode = mp::get<0, I>::value;
-                        constexpr bool exact = mp::get<1, I>::value;
-
-                        for (size_t i = 0; i < output.size(); ++i) {
-                            output[i] = static_cast<FPT>(FP::FPRoundInt<FPT>(input[i], fpcr, rounding_mode, exact, fpsr));
-                        }
-                    })};
-        },
-        mp::cartesian_product<rounding_list, exact_list>{});
-
-    EmitTwoOpFallback<3>(code, ctx, inst, lut.at(std::make_tuple(rounding, exact)));
+    // Do not make a LUT out of this, let the compiler do it's thing
+    using FPT = mcl::unsigned_integer_of_size<fsize>;
+    switch (rounding) {
+    case FP::RoundingMode::ToNearest_TieEven:
+        exact
+            ? EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::ToNearest_TieEven, true>)
+            : EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::ToNearest_TieEven, false>);
+        break;
+    case FP::RoundingMode::TowardsPlusInfinity:
+        exact
+            ? EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsPlusInfinity, true>)
+            : EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsPlusInfinity, false>);
+        break;
+    case FP::RoundingMode::TowardsMinusInfinity:
+        exact
+            ? EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsMinusInfinity, true>)
+            : EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsMinusInfinity, false>);
+        break;
+    case FP::RoundingMode::TowardsZero:
+        exact
+            ? EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsZero, true>)
+            : EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::TowardsZero, false>);
+        break;
+    case FP::RoundingMode::ToNearest_TieAwayFromZero:
+        exact
+            ? EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::ToNearest_TieAwayFromZero, true>)
+            : EmitTwoOpFallback<3>(code, ctx, inst, EmitFPVectorRoundIntThunk<FPT, FP::RoundingMode::ToNearest_TieAwayFromZero, false>);
+        break;
+    default:
+        UNREACHABLE();
+    }
 }
 
 void EmitX64::EmitFPVectorRoundInt16(EmitContext& ctx, IR::Inst* inst) {
@@ -1761,8 +1757,8 @@ static void EmitRSqrtEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
     if constexpr (fsize != 16) {
         if (ctx.HasOptimization(OptimizationFlag::Unsafe_ReducedErrorFP)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
 
             if (code.HasHostFeature(HostFeature::AVX512_OrthoFloat)) {
                 FCODE(vrsqrt14p)(result, operand);
@@ -1776,7 +1772,7 @@ static void EmitRSqrtEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
                 }
             }
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
@@ -1784,9 +1780,9 @@ static void EmitRSqrtEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
             const bool fpcr_controlled = args[1].GetImmediateU1();
 
-            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm value = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm operand = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm value = ctx.reg_alloc.ScratchXmm(code);
 
             SharedLabel bad_values = GenSharedLabel(), end = GenSharedLabel();
 
@@ -1812,7 +1808,7 @@ static void EmitRSqrtEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
 
             ctx.deferred_emits.emplace_back([=, &code, &ctx] {
                 code.L(*bad_values);
-                code.sub(rsp, 8);
+                code.lea(rsp, ptr[rsp - 8]);
                 ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
                 EmitTwoOpFallbackWithoutRegAlloc(code, ctx, result, operand, fallback_fn, fpcr_controlled);
                 ABI_PopCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
@@ -1820,7 +1816,7 @@ static void EmitRSqrtEstimate(BlockOfCode& code, EmitContext& ctx, IR::Inst* ins
                 code.jmp(*end, code.T_NEAR);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
     }
@@ -1855,9 +1851,9 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
             const bool fpcr_controlled = args[2].GetImmediateU1();
 
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
 
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 code.vmovaps(result, GetVectorOf<fsize, false, 0, 3>(code));
@@ -1865,7 +1861,7 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
                 FCODE(vmulp)(result, result, GetVectorOf<fsize, false, -1, 1>(code));
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
@@ -1873,11 +1869,11 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
             const bool fpcr_controlled = args[2].GetImmediateU1();
 
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
-            const Xbyak::Xmm mask = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
+            const Xbyak::Xmm mask = ctx.reg_alloc.ScratchXmm(code);
 
             SharedLabel end = GenSharedLabel(), fallback = GenSharedLabel();
 
@@ -1898,7 +1894,7 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
 
             ctx.deferred_emits.emplace_back([=, &code, &ctx] {
                 code.L(*fallback);
-                code.sub(rsp, 8);
+                code.lea(rsp, ptr[rsp - 8]);
                 ABI_PushCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
                 EmitThreeOpFallbackWithoutRegAlloc(code, ctx, result, operand1, operand2, fallback_fn, fpcr_controlled);
                 ABI_PopCallerSaveRegistersAndAdjustStackExcept(code, HostLocXmmIdx(result.getIdx()));
@@ -1906,23 +1902,23 @@ static void EmitRSqrtStepFused(BlockOfCode& code, EmitContext& ctx, IR::Inst* in
                 code.jmp(*end, code.T_NEAR);
             });
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
 
         if (ctx.HasOptimization(OptimizationFlag::Unsafe_UnfuseFMA)) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(args[0]);
-            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(args[1]);
-            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm();
+            const Xbyak::Xmm operand1 = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+            const Xbyak::Xmm operand2 = ctx.reg_alloc.UseXmm(code, args[1]);
+            const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);
 
             code.movaps(result, GetVectorOf<fsize, false, 0, 3>(code));
             FCODE(mulp)(operand1, operand2);
             FCODE(subp)(result, operand1);
             FCODE(mulp)(result, GetVectorOf<fsize, false, -1, 1>(code));
 
-            ctx.reg_alloc.DefineValue(inst, result);
+            ctx.reg_alloc.DefineValue(code, inst, result);
             return;
         }
     }
@@ -1962,51 +1958,55 @@ void EmitX64::EmitFPVectorSub64(EmitContext& ctx, IR::Inst* inst) {
     EmitThreeOpVectorOperation<64, DefaultIndexer>(code, ctx, inst, &Xbyak::CodeGenerator::subpd);
 }
 
+template<FP::RoundingMode rounding_mode>
+static void EmitFPVectorToHalf32Thunk(VectorArray<u16>& output, const VectorArray<u32>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
+    for (size_t i = 0; i < output.size(); ++i)
+        output[i] = i < input.size() ? FP::FPConvert<u16, u32>(input[i], fpcr, rounding_mode, fpsr) : 0;
+}
+
 void EmitX64::EmitFPVectorToHalf32(EmitContext& ctx, IR::Inst* inst) {
-    const auto rounding_mode = static_cast<FP::RoundingMode>(inst->GetArg(1).GetU8());
+    const auto rounding_mode = FP::RoundingMode(inst->GetArg(1).GetU8());
     const bool fpcr_controlled = inst->GetArg(2).GetU1();
 
     if (code.HasHostFeature(HostFeature::F16C) && !ctx.FPCR().AHP() && !ctx.FPCR().FZ16()) {
         auto args = ctx.reg_alloc.GetArgumentInfo(inst);
         const auto round_imm = ConvertRoundingModeToX64Immediate(rounding_mode);
 
-        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(args[0]);
+        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
 
         ForceToDefaultNaN<32>(code, ctx.FPCR(fpcr_controlled), result);
-        code.vcvtps2ph(result, result, static_cast<u8>(*round_imm));
+        code.vcvtps2ph(result, result, u8(*round_imm));
 
-        ctx.reg_alloc.DefineValue(inst, result);
-        return;
+        ctx.reg_alloc.DefineValue(code, inst, result);
+    } else {
+        switch (rounding_mode) {
+        case FP::RoundingMode::ToNearest_TieEven:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorToHalf32Thunk<FP::RoundingMode::ToNearest_TieEven>);
+            break;
+        case FP::RoundingMode::TowardsPlusInfinity:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorToHalf32Thunk<FP::RoundingMode::TowardsPlusInfinity>);
+            break;
+        case FP::RoundingMode::TowardsMinusInfinity:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorToHalf32Thunk<FP::RoundingMode::TowardsMinusInfinity>);
+            break;
+        case FP::RoundingMode::TowardsZero:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorToHalf32Thunk<FP::RoundingMode::TowardsZero>);
+            break;
+        case FP::RoundingMode::ToNearest_TieAwayFromZero:
+            EmitTwoOpFallback<2>(code, ctx, inst, EmitFPVectorToHalf32Thunk<FP::RoundingMode::ToNearest_TieAwayFromZero>);
+            break;
+        default:
+            UNREACHABLE();
+        }
     }
-
-    using rounding_list = mp::list<
-        mp::lift_value<FP::RoundingMode::ToNearest_TieEven>,
-        mp::lift_value<FP::RoundingMode::TowardsPlusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsMinusInfinity>,
-        mp::lift_value<FP::RoundingMode::TowardsZero>,
-        mp::lift_value<FP::RoundingMode::ToNearest_TieAwayFromZero>>;
-
-    static const auto lut = Common::GenerateLookupTableFromList(
-        []<typename I>(I) {
-            return std::pair{
-                mp::lower_to_tuple_v<I>,
-                Common::FptrCast(
-                    [](VectorArray<u16>& output, const VectorArray<u32>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
-                        constexpr FP::RoundingMode rounding_mode = mp::get<0, I>::value;
-
-                        for (size_t i = 0; i < output.size(); ++i) {
-                            if (i < input.size()) {
-                                output[i] = FP::FPConvert<u16, u32>(input[i], fpcr, rounding_mode, fpsr);
-                            } else {
-                                output[i] = 0;
-                            }
-                        }
-                    })};
-        },
-        mp::cartesian_product<rounding_list>{});
-
-    EmitTwoOpFallback<2>(code, ctx, inst, lut.at(std::make_tuple(rounding_mode)));
 }
+
+// Assembly thunk; just remember not to specialise too much otherwise i-cache death!
+// template<typename FPT, size_t fbits, FP::RoundingMode rounding_mode>
+// static void EmitFPVectorToFixedThunk(VectorArray<FPT>& output, const VectorArray<FPT>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
+//     for (size_t i = 0; i < output.size(); ++i)
+//         output[i] = FPT(FP::FPToFixed<FPT>(fsize, input[i], fbits, unsigned_, fpcr, rounding_mode, fpsr));
+// }
 
 template<size_t fsize, bool unsigned_>
 void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
@@ -2018,7 +2018,7 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
         if (code.HasHostFeature(HostFeature::SSE41) && rounding != FP::RoundingMode::ToNearest_TieAwayFromZero) {
             auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
-            const Xbyak::Xmm src = ctx.reg_alloc.UseScratchXmm(args[0]);
+            const Xbyak::Xmm src = ctx.reg_alloc.UseScratchXmm(code, args[0]);
 
             MaybeStandardFPSCRValue(code, ctx, fpcr_controlled, [&] {
                 const int round_imm = [&] {
@@ -2045,8 +2045,8 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
                         if (code.HasHostFeature(HostFeature::AVX512_OrthoFloat)) {
                             code.vcvttpd2qq(src, src);
                         } else {
-                            const Xbyak::Reg64 hi = ctx.reg_alloc.ScratchGpr();
-                            const Xbyak::Reg64 lo = ctx.reg_alloc.ScratchGpr();
+                            const Xbyak::Reg64 hi = ctx.reg_alloc.ScratchGpr(code);
+                            const Xbyak::Reg64 lo = ctx.reg_alloc.ScratchGpr(code);
 
                             code.cvttsd2si(lo, src);
                             code.punpckhqdq(src, src);
@@ -2093,19 +2093,19 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
                         FCODE(andp)(src, xmm0);
 
                         // Will we exceed unsigned range?
-                        const Xbyak::Xmm exceed_unsigned = ctx.reg_alloc.ScratchXmm();
+                        const Xbyak::Xmm exceed_unsigned = ctx.reg_alloc.ScratchXmm(code);
                         code.movaps(exceed_unsigned, GetVectorOf<fsize, float_upper_limit_unsigned>(code));
                         FCODE(cmplep)(exceed_unsigned, src);
 
                         // Will be exceed signed range?
-                        const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm();
+                        const Xbyak::Xmm tmp = ctx.reg_alloc.ScratchXmm(code);
                         code.movaps(tmp, GetVectorOf<fsize, float_upper_limit_signed>(code));
                         code.movaps(xmm0, tmp);
                         FCODE(cmplep)(xmm0, src);
                         FCODE(andp)(tmp, xmm0);
                         FCODE(subp)(src, tmp);
                         perform_conversion(src);
-                        ICODE(psll)(xmm0, static_cast<u8>(fsize - 1));
+                        ICODE(psll)(xmm0, u8(fsize - 1));
                         FCODE(orp)(src, xmm0);
 
                         // Saturate to max
@@ -2113,7 +2113,7 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
                     }
                 } else {
                     using FPT = mcl::unsigned_integer_of_size<fsize>;  // WORKAROUND: For issue 678 on MSVC
-                    constexpr u64 integer_max = static_cast<FPT>(std::numeric_limits<std::conditional_t<unsigned_, FPT, std::make_signed_t<FPT>>>::max());
+                    constexpr u64 integer_max = FPT((std::numeric_limits<std::conditional_t<unsigned_, FPT, std::make_signed_t<FPT>>>::max)());
 
                     code.movaps(xmm0, GetVectorOf<fsize, float_upper_limit_signed>(code));
                     FCODE(cmplep)(xmm0, src);
@@ -2122,7 +2122,7 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
                 }
             });
 
-            ctx.reg_alloc.DefineValue(inst, src);
+            ctx.reg_alloc.DefineValue(code, inst, src);
             return;
         }
     }
@@ -2135,22 +2135,18 @@ void EmitFPVectorToFixed(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst) {
         mp::lift_value<FP::RoundingMode::TowardsZero>,
         mp::lift_value<FP::RoundingMode::ToNearest_TieAwayFromZero>>;
 
-    static const auto lut = Common::GenerateLookupTableFromList(
-        []<typename I>(I) {
-            using FPT = mcl::unsigned_integer_of_size<fsize>;  // WORKAROUND: For issue 678 on MSVC
-            return std::pair{
-                mp::lower_to_tuple_v<I>,
-                Common::FptrCast(
-                    [](VectorArray<FPT>& output, const VectorArray<FPT>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
-                        constexpr size_t fbits = mp::get<0, I>::value;
-                        constexpr FP::RoundingMode rounding_mode = mp::get<1, I>::value;
-
-                        for (size_t i = 0; i < output.size(); ++i) {
-                            output[i] = static_cast<FPT>(FP::FPToFixed<FPT>(fsize, input[i], fbits, unsigned_, fpcr, rounding_mode, fpsr));
-                        }
-                    })};
-        },
-        mp::cartesian_product<fbits_list, rounding_list>{});
+    static const auto lut = Common::GenerateLookupTableFromList([]<typename I>(I) {
+        using FPT = mcl::unsigned_integer_of_size<fsize>;  // WORKAROUND: For issue 678 on MSVC
+        return std::pair{
+            mp::lower_to_tuple_v<I>,
+            Common::FptrCast([](VectorArray<FPT>& output, const VectorArray<FPT>& input, FP::FPCR fpcr, FP::FPSR& fpsr) {
+                constexpr size_t fbits = mp::get<0, I>::value;
+                constexpr FP::RoundingMode rounding_mode = mp::get<1, I>::value;
+                for (size_t i = 0; i < output.size(); ++i)
+                    output[i] = FPT(FP::FPToFixed<FPT>(fsize, input[i], fbits, unsigned_, fpcr, rounding_mode, fpsr));
+            })
+        };
+    }, mp::cartesian_product<fbits_list, rounding_list>{});
 
     EmitTwoOpFallback<3>(code, ctx, inst, lut.at(std::make_tuple(fbits, rounding)));
 }
@@ -2180,3 +2176,6 @@ void EmitX64::EmitFPVectorToUnsignedFixed64(EmitContext& ctx, IR::Inst* inst) {
 }
 
 }  // namespace Dynarmic::Backend::X64
+
+#undef FCODE
+#undef ICODE

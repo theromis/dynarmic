@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -8,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "./testenv.h"
+#include "../native/testenv.h"
 
 using namespace Dynarmic;
 
@@ -31,7 +35,7 @@ TEST_CASE("arm: svc", "[arm][A32]") {
     jit.SetCpsr(0x000001d0);  // User-mode
 
     test_env.ticks_left = 3;
-    jit.Run();
+    CheckedRun([&]() { jit.Run(); });
 
     REQUIRE(test_env.svc_called == 0x1ee);
     REQUIRE(jit.Regs()[15] == 0x00000008);

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -11,7 +14,7 @@
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include <mcl/type_traits/integer_of_size.hpp>
-#include <xbyak/xbyak.h>
+#include "dynarmic/backend/x64/xbyak.h"
 
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/abi.h"
@@ -19,7 +22,6 @@
 #include "dynarmic/backend/x64/emit_x64_memory.h"
 #include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/backend/x64/perf_map.h"
-#include "dynarmic/common/x64_disassemble.h"
 #include "dynarmic/interface/exclusive_monitor.h"
 
 namespace Dynarmic::Backend::X64 {
@@ -168,7 +170,7 @@ void A32EmitX64::EmitA32WriteMemory64(A32EmitContext& ctx, IR::Inst* inst) {
 }
 
 void A32EmitX64::EmitA32ClearExclusive(A32EmitContext&, IR::Inst*) {
-    code.mov(code.byte[r15 + offsetof(A32JitState, exclusive_state)], u8(0));
+    code.mov(code.byte[code.ABI_JIT_PTR + offsetof(A32JitState, exclusive_state)], u8(0));
 }
 
 void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst) {
@@ -244,14 +246,14 @@ void A32EmitX64::EmitCheckMemoryAbort(A32EmitContext& ctx, IR::Inst* inst, Xbyak
 
     const A32::LocationDescriptor current_location{IR::LocationDescriptor{inst->GetArg(0).GetU64()}};
 
-    code.test(dword[r15 + offsetof(A32JitState, halt_reason)], static_cast<u32>(HaltReason::MemoryAbort));
+    code.test(dword[code.ABI_JIT_PTR + offsetof(A32JitState, halt_reason)], static_cast<u32>(HaltReason::MemoryAbort));
     if (end) {
         code.jz(*end, code.T_NEAR);
     } else {
         code.jz(skip, code.T_NEAR);
     }
     EmitSetUpperLocationDescriptor(current_location, ctx.Location());
-    code.mov(dword[r15 + offsetof(A32JitState, Reg) + sizeof(u32) * 15], current_location.PC());
+    code.mov(dword[code.ABI_JIT_PTR + offsetof(A32JitState, Reg) + sizeof(u32) * 15], current_location.PC());
     code.ForceReturnFromRunCode();
     code.L(skip);
 }

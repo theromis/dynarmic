@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2022 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -6,9 +9,10 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "./testenv.h"
+#include "../native/testenv.h"
 
 using namespace Dynarmic;
 
@@ -64,7 +68,9 @@ u32 force_default_nan(u32 value) {
 template<typename Fn>
 void run_test(u32 instruction, Fn fn) {
     A64TestEnv env;
-    A64::Jit jit{A64::UserConfig{&env}};
+    A64::UserConfig jit_user_config{};
+    jit_user_config.callbacks = &env;
+    A64::Jit jit{jit_user_config};
 
     env.code_mem.emplace_back(instruction);  // FMAX S0, S1, S2
     env.code_mem.emplace_back(0x14000000);   // B .
@@ -82,7 +88,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == fn(test_case));
 
@@ -92,7 +98,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == fn(test_case));
 
@@ -104,7 +110,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == force_default_nan(fn(test_case)));
 
@@ -114,7 +120,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == force_default_nan(fn(test_case)));
         }
@@ -131,7 +137,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == fn(test_case));
 
@@ -143,7 +149,7 @@ void run_test(u32 instruction, Fn fn) {
             jit.SetPC(0);
 
             env.ticks_left = 2;
-            jit.Run();
+            CheckedRun([&]() { jit.Run(); });
 
             REQUIRE(jit.GetVector(0)[0] == force_default_nan(fn(test_case)));
         }

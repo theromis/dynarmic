@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2025 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2021 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -7,9 +10,9 @@
 #include <mutex>
 
 #include <boost/icl/interval_set.hpp>
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/scope_exit.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
 
 #include "dynarmic/backend/arm64/a32_address_space.h"
 #include "dynarmic/backend/arm64/a32_core.h"
@@ -122,8 +125,8 @@ struct Jit::Impl final {
         current_state.exclusive_state = false;
     }
 
-    void DumpDisassembly() const {
-        ASSERT_FALSE("Unimplemented");
+    std::string Disassemble() const {
+        return {};
     }
 
 private:
@@ -232,8 +235,8 @@ void Jit::ClearExclusiveState() {
     impl->ClearExclusiveState();
 }
 
-void Jit::DumpDisassembly() const {
-    impl->DumpDisassembly();
+std::string Jit::Disassemble() const {
+    return impl->Disassemble();
 }
 
 }  // namespace Dynarmic::A32

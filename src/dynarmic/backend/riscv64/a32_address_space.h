@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2024 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -6,7 +9,7 @@
 #pragma once
 
 #include <biscuit/assembler.hpp>
-#include <tsl/robin_map.h>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/riscv64/code_block.h"
 #include "dynarmic/backend/riscv64/emit_riscv64.h"
@@ -23,7 +26,7 @@ class A32AddressSpace final {
 public:
     explicit A32AddressSpace(const A32::UserConfig& conf);
 
-    IR::Block GenerateIR(IR::LocationDescriptor) const;
+    void GenerateIR(IR::Block& ir_block, IR::LocationDescriptor) const;
 
     CodePtr Get(IR::LocationDescriptor descriptor);
 
@@ -71,8 +74,8 @@ private:
     CodeBlock cb;
     biscuit::Assembler as;
 
-    tsl::robin_map<u64, CodePtr> block_entries;
-    tsl::robin_map<u64, EmittedBlockInfo> block_infos;
+    ankerl::unordered_dense::map<u64, CodePtr> block_entries;
+    ankerl::unordered_dense::map<u64, EmittedBlockInfo> block_infos;
 
     struct PreludeInfo {
         CodePtr end_of_prelude;

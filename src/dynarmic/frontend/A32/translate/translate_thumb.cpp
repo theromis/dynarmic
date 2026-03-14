@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -5,7 +8,7 @@
 
 #include <tuple>
 
-#include <mcl/assert.hpp>
+#include "dynarmic/common/assert.h"
 #include <mcl/bit/bit_field.hpp>
 #include <mcl/bit/swap.hpp>
 
@@ -21,6 +24,7 @@
 #include "dynarmic/frontend/A32/translate/translate_callbacks.h"
 #include "dynarmic/frontend/imm.h"
 #include "dynarmic/interface/A32/config.h"
+#include "dynarmic/ir/basic_block.h"
 
 namespace Dynarmic::A32 {
 namespace {
@@ -94,18 +98,15 @@ u32 ConvertASIMDInstruction(u32 thumb_instruction) {
     return 0xF7F0A000;  // UDF
 }
 
-bool MaybeVFPOrASIMDInstruction(u32 thumb_instruction) {
+inline bool MaybeVFPOrASIMDInstruction(u32 thumb_instruction) noexcept {
     return (thumb_instruction & 0xEC000000) == 0xEC000000 || (thumb_instruction & 0xFF100000) == 0xF9000000;
 }
 
 }  // namespace
 
-IR::Block TranslateThumb(LocationDescriptor descriptor, TranslateCallbacks* tcb, const TranslationOptions& options) {
+void TranslateThumb(IR::Block& block, LocationDescriptor descriptor, TranslateCallbacks* tcb, const TranslationOptions& options) {
     const bool single_step = descriptor.SingleStepping();
-
-    IR::Block block{descriptor};
     TranslatorVisitor visitor{block, descriptor, options};
-
     bool should_continue = true;
     do {
         const u32 arm_pc = visitor.ir.current_location.PC();
@@ -172,12 +173,8 @@ IR::Block TranslateThumb(LocationDescriptor descriptor, TranslateCallbacks* tcb,
             }
         }
     }
-
-    ASSERT_MSG(block.HasTerminal(), "Terminal has not been set");
-
+    ASSERT(block.HasTerminal() && "Terminal has not been set");
     block.SetEndLocation(visitor.ir.current_location);
-
-    return block;
 }
 
 bool TranslateSingleThumbInstruction(IR::Block& block, LocationDescriptor descriptor, u32 thumb_instruction) {

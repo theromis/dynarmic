@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* This file is part of the dynarmic project.
  * Copyright (c) 2016 MerryMage
  * SPDX-License-Identifier: 0BSD
@@ -9,10 +12,11 @@
 
 #include <boost/icl/interval_set.hpp>
 #include <fmt/format.h>
-#include <mcl/assert.hpp>
-#include <mcl/bit_cast.hpp>
+#include "dynarmic/common/assert.h"
+#include <bit>
 #include <mcl/scope_exit.hpp>
-#include <mcl/stdint.hpp>
+#include "dynarmic/common/common_types.h"
+#include "dynarmic/common/llvm_disassemble.h"
 
 #include "dynarmic/backend/x64/a32_emit_x64.h"
 #include "dynarmic/backend/x64/a32_jitstate.h"
@@ -21,12 +25,12 @@
 #include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
 #include "dynarmic/common/atomic.h"
-#include "dynarmic/common/x64_disassemble.h"
+#include "dynarmic/frontend/A32/a32_location_descriptor.h"
 #include "dynarmic/frontend/A32/translate/a32_translate.h"
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/location_descriptor.h"
-#include "dynarmic/ir/opt/passes.h"
+#include "dynarmic/ir/opt_passes.h"
 
 namespace Dynarmic::A32 {
 
@@ -44,7 +48,7 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
 static std::function<void(BlockOfCode&)> GenRCP(const A32::UserConfig& conf) {
     return [conf](BlockOfCode& code) {
         if (conf.page_table) {
-            code.mov(code.r14, mcl::bit_cast<u64>(conf.page_table));
+            code.mov(code.r14, std::bit_cast<u64>(conf.page_table));
         }
         if (conf.fastmem_pointer) {
             code.mov(code.r13, *conf.fastmem_pointer);
@@ -60,12 +64,13 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
 }
 
 struct Jit::Impl {
-    Impl(Jit* jit, A32::UserConfig conf)
-            : block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
-            , emitter(block_of_code, conf, jit)
-            , polyfill_options(GenPolyfillOptions(block_of_code))
-            , conf(std::move(conf))
-            , jit_interface(jit) {}
+    Impl(Jit* jit, A32::UserConfig conf) noexcept
+        : block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+        , emitter(block_of_code, conf, jit)
+        , polyfill_options(GenPolyfillOptions(block_of_code))
+        , conf(std::move(conf))
+        , jit_interface(jit)
+    {}
 
     ~Impl() = default;
 
@@ -173,14 +178,10 @@ struct Jit::Impl {
         return jit_state.SetFpscr(value);
     }
 
-    void DumpDisassembly() const {
+    std::string Disassemble() const {
         const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
-        Common::DumpDisassembledX64(block_of_code.GetCodeBegin(), size);
-    }
-
-    std::vector<std::string> Disassemble() const {
-        const size_t size = reinterpret_cast<const char*>(block_of_code.getCurr()) - reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
-        return Common::DisassembleX64(block_of_code.GetCodeBegin(), size);
+        auto const* p = reinterpret_cast<const char*>(block_of_code.GetCodeBegin());
+        return Common::DisassembleX64(p, p + size);
     }
 
 private:
@@ -202,8 +203,7 @@ private:
     }
 
     A32EmitX64::BlockDescriptor GetBasicBlock(IR::LocationDescriptor descriptor) {
-        auto block = emitter.GetBasicBlock(descriptor);
-        if (block)
+        if (auto block = emitter.GetBasicBlock(descriptor))
             return *block;
 
         constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
@@ -213,20 +213,11 @@ private:
         }
         block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 
-        IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
-        Optimization::PolyfillPass(ir_block, polyfill_options);
-        Optimization::NamingPass(ir_block);
-        if (conf.HasOptimization(OptimizationFlag::GetSetElimination) && !conf.check_halt_on_memory_access) {
-            Optimization::A32GetSetElimination(ir_block, {.convert_nz_to_nzc = true});
-            Optimization::DeadCodeElimination(ir_block);
-        }
-        if (conf.HasOptimization(OptimizationFlag::ConstProp)) {
-            Optimization::A32ConstantMemoryReads(ir_block, conf.callbacks);
-            Optimization::ConstantPropagation(ir_block);
-            Optimization::DeadCodeElimination(ir_block);
-        }
-        Optimization::IdentityRemovalPass(ir_block);
-        Optimization::VerificationPass(ir_block);
+        // LocationDescriptor ctor() does important ops (like tflags) do not skip
+        auto const arch_descriptor = A32::LocationDescriptor{descriptor};
+        ir_block.Reset(arch_descriptor);
+        A32::Translate(ir_block, arch_descriptor, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
+        Optimization::Optimize(ir_block, conf, polyfill_options);
         return emitter.Emit(ir_block);
     }
 
@@ -252,13 +243,13 @@ private:
         }
     }
 
+    IR::Block ir_block = {LocationDescriptor(0, PSR(0), FPSCR(0), false)};
     A32JitState jit_state;
     BlockOfCode block_of_code;
     A32EmitX64 emitter;
     Optimization::PolyfillOptions polyfill_options;
-
+    // Keep it here, you don't wanna mess with the fuckery that's initializer lists
     const A32::UserConfig conf;
-
     Jit* jit_interface;
 
     // Requests made during execution to invalidate the cache are queued up here.
@@ -336,8 +327,8 @@ void Jit::ClearExclusiveState() {
     impl->ClearExclusiveState();
 }
 
-void Jit::DumpDisassembly() const {
-    impl->DumpDisassembly();
+std::string Jit::Disassemble() const {
+    return impl->Disassemble();
 }
 
 }  // namespace Dynarmic::A32
