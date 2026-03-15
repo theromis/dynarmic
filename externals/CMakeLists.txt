@@ -56,10 +56,10 @@ if (NOT TARGET merry::oaknut)
     endif()
 endif()
 
-# robin-map
+# unordered_dense
 
-if (NOT TARGET tsl::robin_map)
-    add_subdirectory(robin-map)
+if (NOT TARGET unordered_dense::unordered_dense)
+    add_subdirectory(unordered_dense)
 endif()
 
 # xbyak
