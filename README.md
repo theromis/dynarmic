@@ -7,6 +7,8 @@ EXCEPT
 
 Azahar gets the whole subproject (Except for Crueter's external changes, which are NOT included), as a GPLv2 licensed subproject.
 
+=
+
 A dynamic recompiler for ARM.
 
 Highlight features:
