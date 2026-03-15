@@ -12,8 +12,7 @@
 
 #include <boost/icl/interval_map.hpp>
 #include <boost/icl/interval_set.hpp>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/ir/location_descriptor.h"
 
@@ -24,8 +23,8 @@ class BlockRangeInformation {
 public:
     void AddRange(boost::icl::discrete_interval<P> range, IR::LocationDescriptor location);
     void ClearCache();
-    std::unordered_set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<P>& ranges);
-    boost::icl::interval_map<P, std::unordered_set<IR::LocationDescriptor>> block_ranges;
+    ankerl::unordered_dense::set<IR::LocationDescriptor> InvalidateRanges(const boost::icl::interval_set<P>& ranges);
+    boost::icl::interval_map<P, ankerl::unordered_dense::set<IR::LocationDescriptor>> block_ranges;
 };
 
 }  // namespace Dynarmic::Backend

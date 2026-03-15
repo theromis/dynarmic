@@ -17,8 +17,7 @@
 #include <vector>
 
 #include <mcl/bitsizeof.hpp>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 #include "dynarmic/backend/x64/xbyak.h"
 #include <boost/container/small_vector.hpp>
 
@@ -89,7 +88,7 @@ public:
     virtual void ClearCache();
 
     /// Invalidates a selection of basic blocks.
-    void InvalidateBasicBlocks(const std::unordered_set<IR::LocationDescriptor>& locations);
+    void InvalidateBasicBlocks(const ankerl::unordered_dense::set<IR::LocationDescriptor>& locations);
 
 //protected:
     // Microinstruction emitters
@@ -131,8 +130,8 @@ public:
     // State
     BlockOfCode& code;
     ExceptionHandler exception_handler;
-    std::unordered_map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
-    std::unordered_map<IR::LocationDescriptor, PatchInformation> patch_information;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, BlockDescriptor> block_descriptors;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, PatchInformation> patch_information;
 
     // We need materialized protected members
     friend class A64EmitX64;

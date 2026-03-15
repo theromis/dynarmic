@@ -14,8 +14,7 @@
 #include "dynarmic/common/common_types.h"
 #include <oaknut/code_block.hpp>
 #include <oaknut/oaknut.hpp>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
 #include "dynarmic/backend/arm64/fastmem.h"
@@ -42,7 +41,7 @@ public:
 
     CodePtr GetOrEmit(IR::LocationDescriptor descriptor);
 
-    void InvalidateBasicBlocks(const std::unordered_set<IR::LocationDescriptor>& descriptors);
+    void InvalidateBasicBlocks(const ankerl::unordered_dense::set<IR::LocationDescriptor>& descriptors);
 
     void ClearCache();
 protected:
@@ -77,9 +76,9 @@ protected:
     // A IR::LocationDescriptor will have one current CodePtr.
     // However, there can be multiple other CodePtrs which are older, previously invalidated blocks.
     std::map<CodePtr, IR::LocationDescriptor> reverse_block_entries;
-    std::unordered_map<IR::LocationDescriptor, CodePtr> block_entries;
-    std::unordered_map<CodePtr, EmittedBlockInfo> block_infos;
-    std::unordered_map<IR::LocationDescriptor, std::unordered_set<CodePtr>> block_references;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, CodePtr> block_entries;
+    ankerl::unordered_dense::map<CodePtr, EmittedBlockInfo> block_infos;
+    ankerl::unordered_dense::map<IR::LocationDescriptor, ankerl::unordered_dense::set<CodePtr>> block_references;
 
     ExceptionHandler exception_handler;
     FastmemManager fastmem_manager;

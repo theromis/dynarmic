@@ -18,8 +18,7 @@
 #include "dynarmic/common/common_types.h"
 #include <mcl/type_traits/is_instance_of_template.hpp>
 #include <oaknut/oaknut.hpp>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 
 #include "dynarmic/backend/arm64/stack_layout.h"
 #include "dynarmic/ir/cond.h"
@@ -337,7 +336,7 @@ private:
     std::array<HostLocInfo, SpillCount> spills;
 
     mutable size_t alloc_candidate_index = 0;
-    std::unordered_set<const IR::Inst*> defined_insts;
+    ankerl::unordered_dense::set<const IR::Inst*> defined_insts;
 };
 
 template<typename T>

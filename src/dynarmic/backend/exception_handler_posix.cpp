@@ -14,8 +14,7 @@
 #include <optional>
 #include <bit>
 #include <fmt/format.h>
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 #include "dynarmic/backend/exception_handler.h"
 #include "dynarmic/common/assert.h"
 #include "dynarmic/common/context.h"
@@ -50,7 +49,7 @@ class SigHandler {
 
     bool supports_fast_mem = true;
     void* signal_stack_memory = nullptr;
-    std::unordered_map<u64, CodeBlockInfo> code_block_infos;
+    ankerl::unordered_dense::map<u64, CodeBlockInfo> code_block_infos;
     std::shared_mutex code_block_infos_mutex;
     struct sigaction old_sa_segv;
     struct sigaction old_sa_bus;
