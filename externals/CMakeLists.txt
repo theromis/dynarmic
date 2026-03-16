@@ -69,17 +69,3 @@ if (NOT TARGET xbyak::xbyak)
         add_subdirectory(xbyak)
     endif()
 endif()
-
-# zydis
-
-if (NOT TARGET Zydis::Zydis)
-    if ("x86_64" IN_LIST ARCHITECTURE)
-        set(ZYDIS_BUILD_TOOLS OFF)
-        set(ZYDIS_BUILD_EXAMPLES OFF)
-        set(ZYDIS_BUILD_DOXYGEN OFF)
-        set(ZYAN_ZYCORE_PATH "${CMAKE_CURRENT_LIST_DIR}/zycore" CACHE PATH "")
-        set(CMAKE_DISABLE_FIND_PACKAGE_Doxygen ON)
-        add_subdirectory(zydis)
-        add_library(Zydis::Zydis ALIAS Zydis)
-    endif()
-endif()

@@ -19,9 +19,6 @@
 [submodule "zycore"]
 	path = externals/zycore
 	url = https://github.com/zyantific/zycore-c.git
-[submodule "zydis"]
-	path = externals/zydis
-	url = https://github.com/zyantific/zydis.git
 [submodule "externals/unordered_dense"]
 	path = externals/unordered_dense
 	url = https://github.com/martinus/unordered_dense

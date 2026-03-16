@@ -137,7 +137,6 @@ if (DYNARMIC_USE_BUNDLED_EXTERNALS)
     set(CMAKE_DISABLE_FIND_PACKAGE_oaknut ON)
     set(CMAKE_DISABLE_FIND_PACKAGE_unordered_dense ON)
     set(CMAKE_DISABLE_FIND_PACKAGE_xbyak ON)
-    set(CMAKE_DISABLE_FIND_PACKAGE_Zydis ON)
 endif()
 
 find_package(Boost 1.57 REQUIRED)
@@ -155,7 +154,6 @@ endif()
 
 if ("x86_64" IN_LIST ARCHITECTURE)
     find_package(xbyak 7 CONFIG)
-    find_package(Zydis 4 CONFIG)
 endif()
 
 if (DYNARMIC_USE_LLVM)
