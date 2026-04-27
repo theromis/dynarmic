@@ -28,12 +28,12 @@ namespace Dynarmic {
 void EmitSpinLockLock(Xbyak::CodeGenerator& code, Xbyak::Address ptr, Xbyak::Reg32 tmp, bool waitpkg) {
     // TODO: this is because we lack regalloc - so better to be safe :(
     if (waitpkg) {
-        code.push(Xbyak::util::eax);
-        code.push(Xbyak::util::ebx);
-        code.push(Xbyak::util::edx);
         Xbyak::Label start, loop;
         code.jmp(start, code.T_NEAR);
         code.L(loop);
+        code.push(Xbyak::util::eax);
+        code.push(Xbyak::util::ebx);
+        code.push(Xbyak::util::edx);
         // TODO: This clobbers EAX and EDX did we tell the regalloc?
         // ARM ptr for address-monitoring
         code.mov(Xbyak::util::eax, ptr);
@@ -51,14 +51,14 @@ void EmitSpinLockLock(Xbyak::CodeGenerator& code, Xbyak::Address ptr, Xbyak::Reg
         code.umwait(Xbyak::util::ebx);
         // CF == 1 if we hit the OS-timeout in IA32_UMWAIT_CONTROL without a write
         // CF == 0 if we exited the wait for any other reason
+        code.pop(Xbyak::util::edx);
+        code.pop(Xbyak::util::ebx);
+        code.pop(Xbyak::util::eax);
         code.L(start);
         code.mov(tmp, 1);
         /*code.lock();*/ code.xchg(ptr, tmp);
         code.test(tmp, tmp);
         code.jnz(loop, code.T_NEAR);
-        code.pop(Xbyak::util::edx);
-        code.pop(Xbyak::util::ebx);
-        code.pop(Xbyak::util::eax);
     } else {
         Xbyak::Label start, loop;
         code.jmp(start, code.T_NEAR);
